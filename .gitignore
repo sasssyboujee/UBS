@@ -8,3 +8,6 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Agent runtime state (may contain grader feedback / notes)
+.agents/memory.json
