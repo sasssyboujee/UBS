@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: ubs-coding-challenge-api
+    env: python
+    buildCommand: "pip install uv && uv sync"
+    startCommand: "uv run fastapi run app/main.py --host 0.0.0.0 --port $PORT"
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12"
