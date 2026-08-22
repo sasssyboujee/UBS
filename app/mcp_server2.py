@@ -23,6 +23,7 @@ import concurrent.futures
 import hashlib
 import heapq
 import json
+import logging
 import math
 import os
 import re
@@ -1282,6 +1283,9 @@ def plan_outing(
 # FastMCP tool registrations
 # ----------------------------------------------------------------------
 
+_LOG = logging.getLogger("uvicorn.error")
+
+
 mcp = FastMCP(
     SERVER_NAME,
     instructions=(
@@ -1357,7 +1361,15 @@ def _recall_impl(
         q = " ".join(str(x) for x in q)
     if not q:
         raise ToolboxError("recall needs a 'question'")
-    return recall(q, materials)
+    passages = recall(q, materials)
+    _LOG.info(
+        "recall q=%r chunks=%d tokens=%d first=%r",
+        str(q)[:200],
+        len(passages),
+        sum(_token_count(x) for x in passages),
+        passages[0][:120] if passages else "",
+    )
+    return passages
 
 
 _RECALL_DESCRIPTION = (
@@ -1397,6 +1409,7 @@ def _navigate_impl(
         )
     hops = _as_int(hops_left or hops_remaining or remaining_hops or allowance or hops or max_hops or hop_allowance)
     path, _cost = _find_path(mid, start, dest, hops, visited, base_url, graph)
+    _LOG.info("navigate map=%.16s from=%s to=%s hops=%s next=%s", mid, start, dest, hops, path[0])
     return path[0]
 
 
