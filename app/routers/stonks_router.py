@@ -1,140 +1,126 @@
+from typing import Any
 
-from fastapi import APIRouter, Body
-
-from app.models import StonksTestCase
+from fastapi import APIRouter
 
 router = APIRouter()
 
-def solve_test_case(test_case: StonksTestCase) -> list[str]:
-    start_energy = test_case.energy
-    start_capital = test_case.capital
-    timeline = test_case.timeline
+def solve_test_case(test_case: dict[str, Any]) -> list[str]:
+    initial_energy = test_case['energy']
+    initial_capital = test_case['capital']
+    timeline = test_case['timeline']
     
-    available_stocks = {}
-    for year_str, stocks in timeline.items():
-        year = int(year_str)
-        for stock_name, stock_info in stocks.items():
-            available_stocks[(year, stock_name)] = {
-                'price': stock_info.price,
-                'qty': stock_info.qty
-            }
-            
-    best_capital = -1
-    best_actions = []
+    years_with_data = {2037}
+    for y in timeline:
+        years_with_data.add(int(y))
+    years = sorted(years_with_data)
     
-    visited_capital = {}
+    stock_names = set()
+    for y, stocks in timeline.items():
+        for s in stocks:
+            stock_names.add(s)
+    stock_names = sorted(stock_names)
     
-    def get_sell_combinations(owned, year):
-        stocks_can_sell = []
-        for s, qty in owned.items():
-            if qty > 0 and str(year) in timeline and s in timeline[str(year)]:
-                price = timeline[str(year)][s].price
-                stocks_can_sell.append((s, qty, price))
-                
-        import itertools
-        results = []
-        for r in range(len(stocks_can_sell) + 1):
-            for subset in itertools.combinations(stocks_can_sell, r):
-                new_owned = dict(owned)
-                cap_gain = 0
-                actions = []
-                for s, qty, price in subset:
-                    new_owned[s] = 0
-                    cap_gain += qty * price
-                    actions.append(f"s-{s}-{qty}")
-                results.append((new_owned, cap_gain, actions))
-        return results
-
-    def get_buy_combinations(available, capital, year):
-        stocks_can_buy = []
-        for (y, s), info in available.items():
-            if y == year and info['qty'] > 0:
-                stocks_can_buy.append((s, info['qty'], info['price']))
-                
-        results = []
-        import itertools
-        if not stocks_can_buy:
-            return [({}, {}, 0, [])]
+    init_avail = []
+    for y, stocks in timeline.items():
+        for s, info in stocks.items():
+            if info['qty'] > 0:
+                init_avail.append(((int(y), s), info['qty']))
+    init_avail = tuple(sorted(init_avail))
+    
+    memo = {}
+    
+    def dfs(year, en, cap, port, avail):
+        state = (year, en, cap, port, avail)
+        if state in memo:
+            return memo[state]
             
-        for r in range(len(stocks_can_buy) + 1):
-            for subset in itertools.permutations(stocks_can_buy, r):
-                rem_cap = capital
-                spent = 0
-                new_avail_sub = {}
-                new_owned_sub = {}
-                actions = []
-                for s, qty, price in subset:
-                    buy_qty = min(qty, rem_cap // price)
-                    if buy_qty > 0:
-                        spent += buy_qty * price
-                        rem_cap -= buy_qty * price
-                        new_avail_sub[(year, s)] = buy_qty
-                        new_owned_sub[s] = new_owned_sub.get(s, 0) + buy_qty
-                        actions.append(f"b-{s}-{buy_qty}")
-                results.append((new_avail_sub, new_owned_sub, spent, actions))
+        best_cap = cap
+        best_actions = []
         
-        unique_results = {}
-        for r in results:
-            act_tuple = tuple(sorted(r[3]))
-            if act_tuple not in unique_results:
-                unique_results[act_tuple] = r
-        return list(unique_results.values())
-
-    def dfs(year, capital, energy, owned, available, path_actions):
-        nonlocal best_capital, best_actions
-        
-        owned = {k: v for k, v in owned.items() if v > 0}
-        
-        state = (
-            year,
-            energy,
-            tuple(sorted(owned.items())),
-            tuple(sorted((k, v['qty']) for k, v in available.items() if v['qty'] > 0))
-        )
-        if state in visited_capital and visited_capital[state] >= capital:
-            return
-        visited_capital[state] = capital
-        
-        if year == 2037 and capital > best_capital:
-            best_capital = capital
-            best_actions = list(path_actions)
+        prices = {}
+        if str(year) in timeline:
+            for s, info in timeline[str(year)].items():
+                prices[s] = info['price']
                 
-        sell_combos = get_sell_combinations(owned, year)
+        port_dict = dict(port)
+        sellable_stocks = list(port_dict.keys())
         
-        for new_owned, cap_gain, s_actions in sell_combos:
-            curr_cap = capital + cap_gain
-            buy_combos = get_buy_combinations(available, curr_cap, year)
+        sell_combinations = []
+        def gen_sells(idx, current_cap, current_port, current_actions):
+            if idx == len(sellable_stocks):
+                sell_combinations.append((current_cap, current_port, current_actions))
+                return
+            s = sellable_stocks[idx]
+            current_port_dict = dict(current_port)
+            qty = current_port_dict.get(s, 0)
             
-            for avail_sub, own_sub, cap_spent, b_actions in buy_combos:
-                final_cap = curr_cap - cap_spent
-                final_owned = dict(new_owned)
-                for s, q in own_sub.items():
-                    final_owned[s] = final_owned.get(s, 0) + q
+            gen_sells(idx + 1, current_cap, current_port, current_actions)
+            
+            if s in prices and qty > 0:
+                new_port = dict(current_port)
+                del new_port[s]
+                new_cap = current_cap + qty * prices[s]
+                new_act = list(current_actions)
+                new_act.append(f"s-{s}-{qty}")
+                gen_sells(idx + 1, new_cap, tuple(sorted(new_port.items())), tuple(new_act))
+                
+        gen_sells(0, cap, port, ())
+        
+        avail_dict = dict(avail)
+        buyable_stocks = [s for s in stock_names if s in prices and avail_dict.get((year, s), 0) > 0]
+        
+        all_trades = []
+        for s_cap, s_port, s_actions in sell_combinations:
+            def gen_buys(idx, current_cap, current_port, current_avail, current_actions):
+                if idx == len(buyable_stocks):
+                    all_trades.append((current_cap, current_port, current_avail, current_actions))
+                    return
+                s = buyable_stocks[idx]
+                current_avail_dict = dict(current_avail)
+                max_q = current_avail_dict.get((year, s), 0)
+                price = prices[s]
+                max_affordable = current_cap // price
+                max_can_buy = min(max_q, max_affordable)
+                
+                gen_buys(idx + 1, current_cap, current_port, current_avail, current_actions)
+                
+                if max_can_buy > 0:
+                    new_cap = current_cap - max_can_buy * price
+                    new_port = dict(current_port)
+                    new_port[s] = new_port.get(s, 0) + max_can_buy
+                    new_avail = dict(current_avail)
+                    new_avail[(year, s)] -= max_can_buy
+                    if new_avail[(year, s)] == 0:
+                        del new_avail[(year, s)]
+                    new_act = list(current_actions)
+                    new_act.append(f"b-{s}-{max_can_buy}")
+                    gen_buys(idx + 1, new_cap, tuple(sorted(new_port.items())), tuple(sorted(new_avail.items())), tuple(new_act))
                     
-                final_avail = {k: dict(v) for k, v in available.items()}
-                for k, q in avail_sub.items():
-                    final_avail[k]['qty'] -= q
-                    
-                actions = list(path_actions) + s_actions + b_actions
-                
-                if year == 2037 and final_cap > best_capital:
-                    best_capital = final_cap
-                    best_actions = list(actions)
-                
-                for target_year_str in timeline:
-                    target_year = int(target_year_str)
-                    if target_year != year:
-                        cost = abs(target_year - year)
-                        if energy >= cost:
-                            dfs(target_year, final_cap, energy - cost, final_owned, final_avail, actions + [f"j-{year}-{target_year}"])
+            gen_buys(0, s_cap, s_port, avail, s_actions)
+            
+        for t_cap, t_port, t_avail, t_actions in all_trades:
+            if year == 2037 and t_cap > best_cap:
+                best_cap = t_cap
+                best_actions = list(t_actions)
+            
+            for next_y in years:
+                if next_y != year:
+                    cost = abs(next_y - year)
+                    if en >= cost:
+                        res_cap, res_actions = dfs(next_y, en - cost, t_cap, t_port, t_avail)
+                        if res_cap > best_cap:
+                            best_cap = res_cap
+                            best_actions = list(t_actions) + [f"j-{year}-{next_y}"] + res_actions
+                            
+        memo[state] = (best_cap, best_actions)
+        return memo[state]
+        
+    _final_cap, final_actions = dfs(2037, initial_energy, initial_capital, (), init_avail)
+    return final_actions
 
-    dfs(2037, start_capital, start_energy, {}, available_stocks, [])
-    
-    return best_actions
-
-@router.post("/stonks")
-def stonks_endpoint(test_cases: list[StonksTestCase] = Body(...)):
+@router.post("/stonks", response_model=list[list[str]])
+async def stonks(test_cases: list[dict[str, Any]]):
     results = []
-    for test_case in test_cases:
-        results.append(solve_test_case(test_case))
+    for tc in test_cases:
+        results.append(solve_test_case(tc))
     return results
