@@ -142,10 +142,7 @@ def travel_time(
 
 
 def solve_case(case: dict[str, Any]) -> dict[str, Any]:
-    try:
-        return _solve_case(case)
-    except Exception:  # noqa: BLE001 - a malformed case must not fail the whole batch
-        return UNREACHABLE
+    return _solve_case(case)
 
 
 def _solve_case(case: dict[str, Any]) -> dict[str, Any]:
