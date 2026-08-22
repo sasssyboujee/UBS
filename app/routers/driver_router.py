@@ -419,7 +419,7 @@ def solve_case(case):
         "arrival_time": iso_time(best_destination),
         "path": path,
     }
-@app.post("/kan-cheong-delivery-driver")
+@router.post("/kan-cheong-delivery-driver")
 async def kan_cheong_delivery_driver(batch: dict):
     return {
         case_id: solve_case(case)
