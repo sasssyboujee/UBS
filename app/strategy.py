@@ -683,7 +683,8 @@ def _rule_pre_reveal(req: MoveRequest, legal: set[str], codename: str) -> MoveRe
     With few observations we keep pots small and call modest raises so hands
     reach showdown and the rule gets learned. Once the codename is understood
     we use the learned equity to value-raise and fold correctly. Pot control
-    is capped by confidence so a wrong prior can never cost the stack.
+    is capped by confidence so a wrong prior can never cost the stack. In
+    lockdown tier 1 (ahead but not yet lockable) sizing and risk are halved.
     """
     card = req.your_number or 1
     to_call = req.to_call or 0
@@ -691,16 +692,19 @@ def _rule_pre_reveal(req: MoveRequest, legal: set[str], codename: str) -> MoveRe
     stack = req.your_stack or 0
     obs = _codename_observations(codename)
     conf = _rule_confidence(obs)
+    tight = _lockdown_tier(req) >= 1
 
     if to_call == 0:
         if obs >= 4 and "raise" in legal:
             equity = _equity_pre(card, codename)
             frac = 0.25 + 0.35 * conf  # 0.25 .. 0.60 pot
+            if tight:
+                frac *= 0.5
             if equity > 0.80 - 0.10 * conf:
                 return MoveResponse(action="raise", amount=_clamp_raise(req, frac))
             if equity > 0.55 + 0.25 * (1 - conf):
                 return MoveResponse(action="raise", amount=_clamp_raise(req, frac * 0.7))
-            if conf >= 0.6 and equity < 0.30 and _chance(req, "bluff_pre_rule", 5):
+            if not tight and conf >= 0.6 and equity < 0.30 and _chance(req, "bluff_pre_rule", 5):
                 return MoveResponse(action="raise", amount=_clamp_raise(req, min(frac, 0.4)))
         return MoveResponse(action="check")
 
@@ -709,19 +713,23 @@ def _rule_pre_reveal(req: MoveRequest, legal: set[str], codename: str) -> MoveRe
 
     if obs < 4:
         # Exploration: pay small raises to reach showdown and learn the rule.
-        if to_call <= max(3, int(0.12 * stack)) and "call" in legal:
+        cap = max(3, int((0.12 if not tight else 0.06) * stack))
+        if to_call <= cap and "call" in legal:
             return MoveResponse(action="call")
-        if equity > odds + 0.10 and to_call <= int(0.15 * stack) and "call" in legal:
+        if (not tight and equity > odds + 0.10
+                and to_call <= int(0.15 * stack) and "call" in legal):
             return MoveResponse(action="call")
         return MoveResponse(action="fold")
 
     margin = 0.02 + 0.10 * (1 - conf)
     # Never commit more than a fifth of the stack pre-reveal under an
     # uncertain rule unless the learned model is confident we dominate.
-    if to_call > int(0.20 * stack) and equity < 0.80:
+    cap_frac, strong = (0.10, 0.85) if tight else (0.20, 0.80)
+    if to_call > int(cap_frac * stack) and equity < strong:
         return MoveResponse(action="fold")
     if equity > odds + margin:
-        if equity > 0.75 and conf >= 0.6 and "raise" in legal and to_call < 0.15 * stack:
+        if (not tight and equity > 0.75 and conf >= 0.6 and "raise" in legal
+                and to_call < 0.15 * stack):
             return MoveResponse(action="raise", amount=_clamp_raise(req, 0.25 + 0.30 * conf))
         return MoveResponse(action="call")
     return MoveResponse(action="fold")
@@ -732,7 +740,8 @@ def _rule_post_reveal(req: MoveRequest, legal: set[str], codename: str) -> MoveR
 
     Sizing and the threshold for betting rise with confidence in the learned
     model. Calls are hard-capped by stack fraction so a misread rule can bleed
-    small pots but can never stack us in one hand.
+    small pots but can never stack us in one hand. In lockdown tier 1 (ahead
+    but not yet lockable) sizing and risk are halved.
     """
     card = req.your_number or 1
     community = req.community_number
@@ -745,13 +754,16 @@ def _rule_post_reveal(req: MoveRequest, legal: set[str], codename: str) -> MoveR
     obs = _codename_observations(codename)
     conf = _rule_confidence(obs)
     equity = _equity_post(card, community, codename)
+    tight = _lockdown_tier(req) >= 1
 
     if to_call == 0:
         if obs >= 3 and "bet" in legal:
             frac = 0.30 + 0.40 * conf  # 0.30 .. 0.70 pot
+            if tight:
+                frac *= 0.5
             if equity > 0.90 - 0.35 * conf:
                 return MoveResponse(action="bet", amount=_clamp_raise(req, frac))
-            if conf >= 0.6 and equity < 0.30 and _chance(req, "bluff_post_rule", 5):
+            if not tight and conf >= 0.6 and equity < 0.30 and _chance(req, "bluff_post_rule", 5):
                 return MoveResponse(action="bet", amount=_clamp_raise(req, min(frac, 0.4)))
         return MoveResponse(action="check")
 
@@ -766,25 +778,130 @@ def _rule_post_reveal(req: MoveRequest, legal: set[str], codename: str) -> MoveR
 
     # Pot control: never commit more than a third of the stack on one call
     # unless the learned model is confident we are a big favourite.
-    if to_call > int(0.35 * stack):
-        if equity > 0.78 and conf >= 0.4 and "call" in legal:
+    cap_frac, cap_equity, cap_conf = (
+        (0.18, 0.85, 0.5) if tight else (0.35, 0.78, 0.4)
+    )
+    if to_call > int(cap_frac * stack):
+        if equity > cap_equity and conf >= cap_conf and "call" in legal:
             return MoveResponse(action="call")
         return MoveResponse(action="fold")
 
     if equity > 0.70 and "call" in legal:
-        if (last_opp == "bet" and equity > 0.72 and conf >= 0.6
+        if (not tight and last_opp == "bet" and equity > 0.72 and conf >= 0.6
                 and "raise" in legal and to_call < 0.25 * stack):
             return MoveResponse(action="raise", amount=_clamp_raise(req, 0.30 + 0.30 * conf))
         return MoveResponse(action="call")
 
-    if obs < 4 and to_call <= max(3, int(0.10 * stack)) and "call" in legal:
+    if obs < 4 and to_call <= max(3, int((0.10 if not tight else 0.05) * stack)) and "call" in legal:
         return MoveResponse(action="call")
 
-    if to_call > int(0.15 * stack) and equity < 0.55:
+    if to_call > int((0.15 if not tight else 0.08) * stack) and equity < 0.55:
         return MoveResponse(action="fold")
 
     if range_equity > odds + margin:
         return MoveResponse(action="call")
+    return MoveResponse(action="fold")
+
+
+# ---------------------------------------------------------------------------
+# Lockdown (nit) mode: once a leg is cleared, protect it
+# ---------------------------------------------------------------------------
+# Scoring is per leg (chip delta >= threshold), so the objective flips from
+# "maximise expected chips" to "minimise the chance of falling back under the
+# threshold". Once the margin is large enough that folding every remaining
+# hand still clears the leg, we fold everything except post-reveal pairs,
+# which we jam all-in because a pair can never lose (worst case it splits).
+# Under an unknown table rule a pair is only a prior, so the jam requires the
+# learned model to have direct evidence that pairs win under this codename.
+
+LOCKDOWN_MIN_DELTA = 25  # engage at/above this chip delta
+LOCKDOWN_PRE_JAM = False  # experiment flag: also all-in pre-reveal premiums
+LOCKDOWN_PRE_JAM_EQUITY = 0.85
+# Chips/hand of margin required above the threshold before full nitting:
+# folding every remaining hand bleeds ~1.5 chips/hand in blinds, so 2 makes
+# pure nitting provably lock the leg. 0 engages the full nit immediately at
+# the threshold (variance-friendly only when the jams pay for the bleed).
+LOCKDOWN_MARGIN_FACTOR = 2
+
+
+def _our_chip_delta(req: MoveRequest) -> int:
+    """Our running chip delta (completed hands)."""
+    player = _our_player(req)
+    if player is not None and player.chip_delta:
+        return player.chip_delta
+    # Fallback estimate: bankroll (stack + chips committed this round) minus
+    # the starting stack. Slightly conservative because the committed chips
+    # are in the pot, not yet lost.
+    return (
+        (req.your_stack or 0) + _our_bet_this_round(req) - (req.starting_stack or 200)
+    )
+
+
+def _lockdown_tier(req: MoveRequest) -> int:
+    """0 = normal play, 1 = tighten (ahead, not lockable), 2 = full nit."""
+    delta = _our_chip_delta(req)
+    if delta < LOCKDOWN_MIN_DELTA:
+        return 0
+    remaining = max(1, (req.total_hands or 40) - (req.hand_number or 0))
+    if delta >= LOCKDOWN_MIN_DELTA + LOCKDOWN_MARGIN_FACTOR * remaining:
+        return 2
+    return 1
+
+
+def _pair_confirmed(codename: str, community: int) -> bool:
+    """True when the learned model has direct evidence that a pair of this
+    community wins under the codename.
+
+    Splits count 0.5, so a pair type that only ever wins or splits rates
+    >= 0.5; a pair type that loses rates ~0. The 0.45 bar accepts a single
+    observed split (pairs at worst break even) while rejecting pair-losing
+    rules after one observed loss.
+    """
+    stats = _RULE_STATS.get(codename)
+    if stats is None:
+        return False
+    idx = _hand_index(community, True)
+    games = stats["games"][idx]
+    if games < 1:
+        return False
+    return stats["wins"][idx] / games >= 0.45
+
+
+def _lockdown_nit_move(
+    req: MoveRequest, legal: set[str], codename: str
+) -> MoveResponse | None:
+    """Full nit (tier 2): fold everything, jam confirmed pairs post-reveal."""
+    card = req.your_number or 1
+    to_call = req.to_call or 0
+
+    if req.round == "pre_reveal":
+        if to_call == 0:
+            if (LOCKDOWN_PRE_JAM and "bet" in legal
+                    and req.max_raise_to is not None
+                    and _equity_pre(card, codename) >= LOCKDOWN_PRE_JAM_EQUITY):
+                return MoveResponse(action="bet", amount=req.max_raise_to)
+            return MoveResponse(action="check")
+        # Completing the small blind costs the same as folding it.
+        if to_call <= 1 and "call" in legal:
+            return MoveResponse(action="call")
+        return MoveResponse(action="fold")
+
+    community = req.community_number
+    if community is None:
+        return None
+
+    if card == community and _pair_confirmed(codename, community):
+        if to_call == 0:
+            if "bet" in legal and req.max_raise_to is not None:
+                return MoveResponse(action="bet", amount=req.max_raise_to)
+            return MoveResponse(action="check")
+        if "raise" in legal and req.max_raise_to is not None:
+            return MoveResponse(action="raise", amount=req.max_raise_to)
+        if "call" in legal:
+            return MoveResponse(action="call")
+
+    if to_call == 0:
+        return MoveResponse(action="check")
     return MoveResponse(action="fold")
 
 
@@ -819,12 +936,20 @@ def choose_action(req: MoveRequest) -> MoveResponse:
 
     ``table_rule`` is read from every request. Unknown codenames are played
     with the learned adaptive strategy; observations from ``recent_hands`` are
-    folded into the model first so decisions use the freshest data.
+    folded into the model first so decisions use the freshest data. When a
+    leg is safely cleared the bot switches to nit mode to lock it in.
     """
     legal = set(req.legal_actions or [])
     _record_recent_hands(req)
 
     codename = req.table_rule or "standard"
+
+    tier = _lockdown_tier(req)
+    if tier == 2:
+        resp = _lockdown_nit_move(req, legal, codename)
+        if resp is not None:
+            return _legalize(resp, req, legal)
+
     if codename in KNOWN_TABLE_RULES:
         if req.round == "pre_reveal":
             resp = _pre_reveal(req, legal, codename)

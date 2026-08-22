@@ -1,6 +1,5 @@
 import base64
 import json
-import math
 
 from fastapi import APIRouter, HTTPException, status
 
