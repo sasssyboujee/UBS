@@ -24,16 +24,27 @@ from __future__ import annotations
 import heapq
 import itertools
 from bisect import bisect_right
+from calendar import timegm
 from datetime import UTC, datetime
 from math import ceil
+from re import compile as re_compile
 from typing import Any
 
 INF = float("inf")
-MAX_POPS = 200_000
+MAX_POPS = 50_000
+
+_ISO_RE = re_compile(
+    r"(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?Z?"
+)
 
 
 def parse_time(value: str) -> float:
-    """ISO-8601 (with Z or offset) to epoch seconds."""
+    """ISO-8601 (with Z or offset) to epoch seconds — fast path for 'Z' suffix."""
+    m = _ISO_RE.match(value)
+    if m:
+        y, mo, d, h, mi, s = (int(m.group(i)) for i in range(1, 7))
+        frac = float(f"0.{m.group(7)}") if m.group(7) else 0.0
+        return timegm((y, mo, d, h, mi, s, 0, 0, 0)) + frac
     return datetime.fromisoformat(value).timestamp()
 
 
@@ -207,21 +218,19 @@ def _solve_case(case: dict[str, Any]) -> dict[str, Any]:
             "path": [],
         }
 
-    # Quick connectivity check: obstructions can only make things worse, so a
-    # destination outside the start's connected component is unreachable.
-    adjacency: list[list[int]] = [[] for _ in range(n_nodes)]
-    for u, v, _, _ in arcs:
-        adjacency[u].append(v)
-        adjacency[v].append(u)
-    seen_nodes: set[int] = set()
-    stack = [start_idx]
-    while stack:
-        node = stack.pop()
-        if node in seen_nodes:
-            continue
-        seen_nodes.add(node)
-        stack.extend(adjacency[node])
-    if end_idx not in seen_nodes:
+    # Quick structural connectivity check (ignoring obstructions).
+    reachable = [False] * n_nodes
+    reachable[start_idx] = True
+    q = [start_idx]
+    qi = 0
+    while qi < len(q):
+        node = q[qi]; qi += 1
+        for arc in arcs_by_node[node]:
+            v = arcs[arc][1]
+            if not reachable[v]:
+                reachable[v] = True
+                q.append(v)
+    if not reachable[end_idx]:
         return {"total_duration_sec": None, "arrival_time": None, "path": []}
 
     # Free waiting loops: unobstructed incident edges can be cycled to burn time.
