@@ -77,30 +77,26 @@ async def say_hello(request: HelloRequest):
 
 @app.api_route("/mcp", methods=["GET", "POST"])
 async def mcp_endpoint(request: Request):
-    """Tool-box / Nursery challenge: minimal MCP server (Streamable HTTP)."""
+    """Tool-box / School Days challenge: minimal MCP server (Streamable HTTP)."""
     accept = request.headers.get("accept", "")
 
     if request.method == "GET":
         if "text/event-stream" in accept:
             return StreamingResponse(sse_endpoint_stream(), media_type="text/event-stream")
-        return JSONResponse({"service": "nursery-mcp", "status": "ok"})
+        return JSONResponse({"service": "school-days-mcp", "status": "ok"})
 
-    try:
-        body = await request.json()
-    except ValueError:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid JSON body",
-        )
-
+    # POST: actual JSON-RPC traffic (initialize, tools/list, tools/call, ...)
+    body = await request.json()
     result = handle_rpc(body)
+
     if result is None:
-        return Response(status_code=status.HTTP_202_ACCEPTED)
+        # Notification: no response body expected per JSON-RPC spec.
+        return JSONResponse(content=None, status_code=202)
 
     if "text/event-stream" in accept:
         return StreamingResponse(sse_response_stream(result), media_type="text/event-stream")
-    return JSONResponse(result)
 
+    return JSONResponse(content=result)
 
 if __name__ == "__main__":
     uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True)
