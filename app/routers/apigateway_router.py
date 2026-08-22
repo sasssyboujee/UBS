@@ -2,6 +2,8 @@ import base64
 import json
 import logging
 import math
+from collections import deque
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, HTTPException, status
 
@@ -18,6 +20,21 @@ from app.models import (
 logger = logging.getLogger("uvicorn.error")
 
 router = APIRouter()
+
+# Temporary diagnostics: remember the most recent /solve calls so we can
+# inspect exactly what the coordinator sends and what we answer.
+SOLVE_TRACES: deque = deque(maxlen=100)
+
+
+def _record_trace(decoded: dict, response: SolveResponse | None, error: str | None = None):
+    SOLVE_TRACES.append(
+        {
+            "ts": datetime.now(UTC).isoformat(),
+            "decoded": decoded,
+            "response": response.model_dump(exclude_none=True) if response else None,
+            "error": error,
+        }
+    )
 
 PRIORITY_MAP = {
     "HIGH": 3,
@@ -129,6 +146,11 @@ def _compute_slo(
     )
 
 
+@router.get("/debug/solve-trace")
+async def solve_trace():
+    return {"count": len(SOLVE_TRACES), "traces": list(SOLVE_TRACES)}
+
+
 @router.post(
     "/solve",
     response_model=SolveResponse,
@@ -160,15 +182,19 @@ async def solve_challenge(
 
         logger.info("SOLVE response=%s", response.model_dump_json())
 
+        _record_trace(data, response)
+
         return response
 
     except ValueError as e:
+        _record_trace({}, None, error=f"ValueError: {e}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e),
         )
 
     except TypeError as e:
+        _record_trace({}, None, error=f"TypeError: {e}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Invalid payload structure: {e}",
