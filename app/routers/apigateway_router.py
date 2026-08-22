@@ -1,6 +1,6 @@
 import base64
 import json
-import math
+
 
 from fastapi import APIRouter, HTTPException, status
 
@@ -116,8 +116,8 @@ def _compute_slo(
         for hb in window
     )
 
-    rank = math.ceil(0.95 * len(latencies))
-    p95_latency = latencies[rank - 1]
+    index = int(0.95 * len(latencies))
+    p95_latency = latencies[index]
 
     return SloOutput(
         availability=availability,
