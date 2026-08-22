@@ -3,7 +3,7 @@ from concurrent.futures import ProcessPoolExecutor
 
 from fastapi import APIRouter
 
-from app.strategy import solve_case  # wherever solve_case actually lives
+from app.kan_cheong import solve_case  # wherever solve_case actually lives
 
 router = APIRouter()
 
