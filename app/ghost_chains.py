@@ -109,6 +109,7 @@ INF = float("inf")
 
 # Score weights for the structural raw signal.
 W_PAR = 2.0      # an alternative / shortened route between connected nodes
+W_FAN_IN = 2.0   # a new incoming branch into an already-connected destination
 W_CYCLE = 10.0   # the edge closes a return path
 W_MULTI = 15.0   # per existing return edge flowing back into the destination
 
@@ -331,11 +332,22 @@ class GhostChainScorer:
 
         cycle = 0
         multi = 0
-        if is_new and (u == v or (self.reach[v] >> u_idx) & 1):
-            cycle = 1
-            multi = (self.in_mask.get(v, 0) & self.reach[v]).bit_count()
+        fan_in = 0
+        if is_new:
+            # A new incoming branch into an already-connected destination is
+            # convergence evidence ("money fans into the same destination").
+            fan_in = (self.in_mask.get(v, 0) & ~(1 << u_idx)).bit_count()
+            if u == v or (self.reach[v] >> u_idx) & 1:
+                cycle = 1
+                multi = (self.in_mask.get(v, 0) & self.reach[v]).bit_count()
 
-        return max(0, new_pairs - 1) + W_PAR * par_pairs + W_CYCLE * cycle + W_MULTI * multi
+        return (
+            max(0, new_pairs - 1)
+            + W_PAR * par_pairs
+            + W_FAN_IN * fan_in
+            + W_CYCLE * cycle
+            + W_MULTI * multi
+        )
 
     # ------------------------------------------------------------------
     # Value signal (Phase 3)
