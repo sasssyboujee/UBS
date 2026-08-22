@@ -1300,8 +1300,10 @@ def choose_action(req: MoveRequest) -> MoveResponse:
 
     codename = req.table_rule or "standard"
 
-    if (req.phase >= 2 or codename != "standard" or len(req.players) > 2) and not _is_safe(req):
-        # Below safe threshold: play a disruptive, anti-bot line.
+    is_heads_up = len(req.players) <= 2
+    if is_heads_up and (req.phase == 2 or codename != "standard") and not _is_safe(req):
+        # Below safe threshold: play a disruptive, anti-bot line ONLY in Heads-Up.
+        # In multiway pots (Phase 3/4), Degen is mathematically suicidal.
         return _legalize(_degen_move(req, legal, codename), req, legal)
 
     if req.phase >= 3 or len(req.players) > 2:
