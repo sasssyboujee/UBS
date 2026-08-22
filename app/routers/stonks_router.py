@@ -1,126 +1,176 @@
-from typing import Any
+import heapq
+from typing import Any, Dict, List
 
-from fastapi import APIRouter
+from fastapi import APIRouter, FastAPI, Request
+from fastapi.responses import JSONResponse
 
 router = APIRouter()
 
-def solve_test_case(test_case: dict[str, Any]) -> list[str]:
-    initial_energy = test_case['energy']
-    initial_capital = test_case['capital']
-    timeline = test_case['timeline']
-    
-    years_with_data = {2037}
-    for y in timeline:
-        years_with_data.add(int(y))
-    years = sorted(years_with_data)
-    
-    stock_names = set()
-    for y, stocks in timeline.items():
-        for s in stocks:
-            stock_names.add(s)
-    stock_names = sorted(stock_names)
-    
-    init_avail = []
-    for y, stocks in timeline.items():
-        for s, info in stocks.items():
-            if info['qty'] > 0:
-                init_avail.append(((int(y), s), info['qty']))
-    init_avail = tuple(sorted(init_avail))
-    
-    memo = {}
-    
-    def dfs(year, en, cap, port, avail):
-        state = (year, en, cap, port, avail)
-        if state in memo:
-            return memo[state]
-            
-        best_cap = cap
-        best_actions = []
-        
-        prices = {}
-        if str(year) in timeline:
-            for s, info in timeline[str(year)].items():
-                prices[s] = info['price']
-                
-        port_dict = dict(port)
-        sellable_stocks = list(port_dict.keys())
-        
-        sell_combinations = []
-        def gen_sells(idx, current_cap, current_port, current_actions):
-            if idx == len(sellable_stocks):
-                sell_combinations.append((current_cap, current_port, current_actions))
-                return
-            s = sellable_stocks[idx]
-            current_port_dict = dict(current_port)
-            qty = current_port_dict.get(s, 0)
-            
-            gen_sells(idx + 1, current_cap, current_port, current_actions)
-            
-            if s in prices and qty > 0:
-                new_port = dict(current_port)
-                del new_port[s]
-                new_cap = current_cap + qty * prices[s]
-                new_act = list(current_actions)
-                new_act.append(f"s-{s}-{qty}")
-                gen_sells(idx + 1, new_cap, tuple(sorted(new_port.items())), tuple(new_act))
-                
-        gen_sells(0, cap, port, ())
-        
-        avail_dict = dict(avail)
-        buyable_stocks = [s for s in stock_names if s in prices and avail_dict.get((year, s), 0) > 0]
-        
-        all_trades = []
-        for s_cap, s_port, s_actions in sell_combinations:
-            def gen_buys(idx, current_cap, current_port, current_avail, current_actions):
-                if idx == len(buyable_stocks):
-                    all_trades.append((current_cap, current_port, current_avail, current_actions))
-                    return
-                s = buyable_stocks[idx]
-                current_avail_dict = dict(current_avail)
-                max_q = current_avail_dict.get((year, s), 0)
-                price = prices[s]
-                max_affordable = current_cap // price
-                max_can_buy = min(max_q, max_affordable)
-                
-                gen_buys(idx + 1, current_cap, current_port, current_avail, current_actions)
-                
-                if max_can_buy > 0:
-                    new_cap = current_cap - max_can_buy * price
-                    new_port = dict(current_port)
-                    new_port[s] = new_port.get(s, 0) + max_can_buy
-                    new_avail = dict(current_avail)
-                    new_avail[(year, s)] -= max_can_buy
-                    if new_avail[(year, s)] == 0:
-                        del new_avail[(year, s)]
-                    new_act = list(current_actions)
-                    new_act.append(f"b-{s}-{max_can_buy}")
-                    gen_buys(idx + 1, new_cap, tuple(sorted(new_port.items())), tuple(sorted(new_avail.items())), tuple(new_act))
-                    
-            gen_buys(0, s_cap, s_port, avail, s_actions)
-            
-        for t_cap, t_port, t_avail, t_actions in all_trades:
-            if year == 2037 and t_cap > best_cap:
-                best_cap = t_cap
-                best_actions = list(t_actions)
-            
-            for next_y in years:
-                if next_y != year:
-                    cost = abs(next_y - year)
-                    if en >= cost:
-                        res_cap, res_actions = dfs(next_y, en - cost, t_cap, t_port, t_avail)
-                        if res_cap > best_cap:
-                            best_cap = res_cap
-                            best_actions = list(t_actions) + [f"j-{year}-{next_y}"] + res_actions
-                            
-        memo[state] = (best_cap, best_actions)
-        return memo[state]
-        
-    _final_cap, final_actions = dfs(2037, initial_energy, initial_capital, (), init_avail)
-    return final_actions
+def solve_stonks_case(test_case: Dict[str, Any]) -> List[str]:
+    energy = int(test_case.get("energy", 0))
+    capital = int(test_case.get("capital", 0))
+    raw_timeline = test_case.get("timeline", {})
 
-@router.post("/stonks", response_model=list[list[str]])
-async def stonks(test_cases: list[dict[str, Any]]):
-    results = []
-    for tc in test_cases:
-        results.append(solve_test_case(tc))
-    return results
+    # Parse timeline into structured data
+    timeline: Dict[int, Dict[str, Dict[str, int]]] = {}
+    for y_str, stocks in raw_timeline.items():
+        y = int(y_str)
+        timeline[y] = {}
+        for s_name, data in stocks.items():
+            timeline[y][s_name] = {
+                "price": int(data["price"]),
+                "qty": int(data["qty"]),
+            }
+
+    if 2037 not in timeline:
+        timeline[2037] = {}
+
+    all_years = list(timeline.keys())
+
+    # Pre-calculate maximum possible selling price per stock
+    max_sell_price: Dict[str, int] = {}
+    for y, stocks in timeline.items():
+        for s_name, data in stocks.items():
+            p = data["price"]
+            if s_name not in max_sell_price or p > max_sell_price[s_name]:
+                max_sell_price[s_name] = p
+
+    # Build initial stock availability tuple
+    initial_avail = []
+    for y, stocks in timeline.items():
+        for s_name, data in stocks.items():
+            if data["qty"] > 0:
+                initial_avail.append(((y, s_name), data["qty"]))
+    initial_avail_tuple = tuple(sorted(initial_avail))
+
+    # Priority Queue for State-Space Search:
+    # (-cash, energy_left, current_year, inventory_tuple, available_tuple, actions_tuple)
+    pq = [(-capital, energy, 2037, (), initial_avail_tuple, ())]
+
+    visited: Dict[tuple, int] = {}
+    best_cash = capital
+    best_actions: List[str] = []
+
+    while pq:
+        neg_cash, energy_left, curr_year, inv_tuple, avail_tuple, actions = (
+            heapq.heappop(pq)
+        )
+        cash = -neg_cash
+
+        # Check if we can return to 2037 and liquidate
+        dist_to_2037 = abs(curr_year - 2037)
+        if energy_left >= dist_to_2037:
+            end_actions = list(actions)
+            if curr_year != 2037:
+                end_actions.append(f"j-{curr_year}-2037")
+
+            final_cash = cash
+            inv_dict = dict(inv_tuple)
+            for s_name, q in inv_dict.items():
+                if (
+                    s_name in timeline[2037]
+                    and timeline[2037][s_name]["price"] > 0
+                ):
+                    sell_p = timeline[2037][s_name]["price"]
+                    final_cash += q * sell_p
+                    end_actions.append(f"s-{s_name}-{q}")
+
+            if final_cash > best_cash:
+                best_cash = final_cash
+                best_actions = end_actions
+
+        # Prune state if we've reached this configuration with equal or better cash
+        state_key = (curr_year, inv_tuple, avail_tuple, energy_left)
+        if state_key in visited and visited[state_key] >= cash:
+            continue
+        visited[state_key] = cash
+
+        inv_dict = dict(inv_tuple)
+        avail_dict = dict(avail_tuple)
+
+        # 1. Sell stock held in inventory at current year
+        if curr_year in timeline:
+            for s_name, q in list(inv_dict.items()):
+                if s_name in timeline[curr_year]:
+                    p = timeline[curr_year][s_name]["price"]
+                    new_cash = cash + q * p
+                    new_inv = dict(inv_dict)
+                    del new_inv[s_name]
+                    new_inv_tuple = tuple(sorted(new_inv.items()))
+                    new_actions = actions + (f"s-{s_name}-{q}",)
+
+                    heapq.heappush(
+                        pq,
+                        (
+                            -new_cash,
+                            energy_left,
+                            curr_year,
+                            new_inv_tuple,
+                            avail_tuple,
+                            new_actions,
+                        ),
+                    )
+
+        # 2. Buy stock available in current year
+        if curr_year in timeline:
+            for s_name, data in timeline[curr_year].items():
+                p = data["price"]
+                rem_q = avail_dict.get((curr_year, s_name), 0)
+                if rem_q > 0 and cash >= p:
+                    # Only buy if there's a higher selling opportunity in another year
+                    if max_sell_price.get(s_name, 0) > p:
+                        max_buy = min(rem_q, cash // p)
+                        if max_buy > 0:
+                            new_cash = cash - max_buy * p
+                            new_inv = dict(inv_dict)
+                            new_inv[s_name] = (
+                                new_inv.get(s_name, 0) + max_buy
+                            )
+                            new_inv_tuple = tuple(sorted(new_inv.items()))
+
+                            new_avail = dict(avail_dict)
+                            new_avail[(curr_year, s_name)] = rem_q - max_buy
+                            new_avail_tuple = tuple(sorted(new_avail.items()))
+
+                            new_actions = actions + (f"b-{s_name}-{max_buy}",)
+
+                            heapq.heappush(
+                                pq,
+                                (
+                                    -new_cash,
+                                    energy_left,
+                                    curr_year,
+                                    new_inv_tuple,
+                                    new_avail_tuple,
+                                    new_actions,
+                                ),
+                            )
+
+        # 3. Time travel to another year
+        for y_next in all_years:
+            if y_next != curr_year:
+                dist = abs(curr_year - y_next)
+                if energy_left >= dist:
+                    new_energy = energy_left - dist
+                    new_actions = actions + (f"j-{curr_year}-{y_next}",)
+
+                    heapq.heappush(
+                        pq,
+                        (
+                            -cash,
+                            new_energy,
+                            y_next,
+                            inv_tuple,
+                            avail_tuple,
+                            new_actions,
+                        ),
+                    )
+
+    return best_actions
+
+
+@router.post("/stonks")
+async def stonks_endpoint(request: Request):
+    test_cases = await request.json()
+    results = [solve_stonks_case(tc) for tc in test_cases]
+    return JSONResponse(content=results)
