@@ -40,7 +40,7 @@ from pydantic import Field
 # ----------------------------------------------------------------------
 
 TOKEN_BUDGET = 900          # hard ceiling counted by the judge (o200k_base)
-FILL_TARGET = 880           # we stop filling at this many tokens
+FILL_TARGET = 640           # we stop filling at this many tokens
 _ENCODING = tiktoken.get_encoding("o200k_base")
 
 FETCH_TIMEOUT = 6.0         # per-request network timeout
@@ -395,6 +395,7 @@ _STOPWORDS = {
     "out", "over", "under", "between", "across", "every", "all", "any",
     "some", "most", "few", "more", "less", "last", "first", "next", "has",
     "have", "had", "having", "roughly", "approximately", "there", "itself",
+    "back", "brought", "lastly", "still", "get", "got", "said",
 }
 
 _UNITS = {
@@ -502,7 +503,7 @@ def _lexical_score(chunk: str, terms: set[str]) -> float:
             len(w) >= 4 and (w.startswith(term) or term.startswith(w)) for w in words
         ):
             prefixes += 1
-    return (1.5 * exact + 3.0 * bridges + 0.75 * prefixes) / len(terms)
+    return (2.0 * exact + 3.0 * bridges + 1.5 * prefixes) / len(terms)
 
 
 def recall(question: Any, materials: Any = None) -> list[str]:
@@ -555,6 +556,8 @@ def recall(question: Any, materials: Any = None) -> list[str]:
             continue
         if total >= FILL_TARGET:
             break
+        if tok < 40 and not re.search(r"[.!?]", text):  # skip heading-only fragments
+            continue
         if total + tok <= TOKEN_BUDGET:
             selected.append(text)
             total += tok
@@ -562,7 +565,7 @@ def recall(question: Any, materials: Any = None) -> list[str]:
     # Routing insurance: always carry the runner-up document's top passage.
     if len(ranked_docs) >= 2:
         s2, tok2, text2 = doc_best[ranked_docs[1]]
-        if s2 > 0 and total + tok2 <= TOKEN_BUDGET:
+        if s2 > 0 and not (tok2 < 40 and not re.search(r"[.!?]", text2)) and total + tok2 <= TOKEN_BUDGET:
             selected.append(text2)
             total += tok2
 
@@ -1386,6 +1389,12 @@ def _navigate_impl(
     current: str = "",
     source: str = "",
     hops_left: Any = None,
+    hops_remaining: Any = None,
+    remaining_hops: Any = None,
+    allowance: Any = None,
+    hops: Any = None,
+    max_hops: Any = None,
+    hop_allowance: Any = None,
     visited: Any = None,
     base_url: str = "",
     graph: Any = None,
@@ -1397,7 +1406,7 @@ def _navigate_impl(
         raise ToolboxError(
             "navigate needs: 'map_id', 'from_node' (the node you are on), and 'to' (the destination)"
         )
-    hops = _as_int(hops_left)
+    hops = _as_int(hops_left or hops_remaining or remaining_hops or allowance or hops or max_hops or hop_allowance)
     path, _cost = _find_path(mid, start, dest, hops, visited, base_url, graph)
     return path[0]
 
@@ -1420,6 +1429,12 @@ def _route_impl(
     current: str = "",
     source: str = "",
     hops_left: Any = None,
+    hops_remaining: Any = None,
+    remaining_hops: Any = None,
+    allowance: Any = None,
+    hops: Any = None,
+    max_hops: Any = None,
+    hop_allowance: Any = None,
     visited: Any = None,
     base_url: str = "",
     graph: Any = None,
@@ -1431,7 +1446,7 @@ def _route_impl(
         raise ToolboxError(
             "route needs: 'map_id', 'from_node' (the node you are on), and 'to' (the destination)"
         )
-    hops = _as_int(hops_left)
+    hops = _as_int(hops_left or hops_remaining or remaining_hops or allowance or hops or max_hops or hop_allowance)
     path, cost = _find_path(mid, start, dest, hops, visited, base_url, graph)
     return " -> ".join(path) + f" | total cost {_format_number(cost)}"
 
