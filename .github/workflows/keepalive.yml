@@ -19,8 +19,12 @@ jobs:
     steps:
       - name: Ping the service
         run: |
-          for url in \
-            "https://ubs-coding-challenge-api.onrender.com/healthz" \
-            "https://ubs-coding-challenge-api.onrender.com/mcp" ; do
-            curl -fsS --retry 3 --max-time 30 "$url" > /dev/null || echo "ping failed: $url"
-          done
+          curl -fsS --retry 3 --max-time 30 \
+            "https://ubs-coding-challenge-api.onrender.com/healthz" > /dev/null \
+            || echo "ping failed: healthz"
+          # GET /mcp (Streamable HTTP) needs an SSE Accept header; cut the
+          # stream after 20s - the request still wakes the service.
+          curl -sS --retry 3 --max-time 20 \
+            -H "Accept: text/event-stream" \
+            "https://ubs-coding-challenge-api.onrender.com/mcp" > /dev/null \
+            || echo "ping failed: mcp"

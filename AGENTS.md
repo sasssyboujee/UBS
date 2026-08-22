@@ -84,13 +84,20 @@ Multi-turn agent with tool use connects to our **MCP server at `/mcp`** (Streama
 - `GET /mcp` — SSE endpoint event for the GET-first handshake, or JSON info.
 - `POST /mcp` — JSON-RPC 2.0 (`initialize`, `tools/list`, `tools/call`, notifications → 202). SSE-encoded responses when the client sends `Accept: text/event-stream`.
 
-Tools in `app/mcp_server.py`:
+Tools in `app/mcp_server2.py` (FastMCP from the `mcp` library, Streamable HTTP; mounted at `/mcp` in `app/main.py`, whose lifespan runs the MCP app's lifespan explicitly since FastAPI does not propagate lifespans into mounts):
 
 | Tool | Purpose | Returns |
 | --- | --- | --- |
 | `get_name` | "What is your name?" | `Nursery` (string, 3–30 chars) |
 | `calculate` | full arithmetic expression, e.g. `2 + 3 * 5` | exact number with correct `* /` before `+ -` precedence |
 | `classify_shape` | base64 PNG | `rectangle`, `triangle`, or `circle` (OpenCV contours + circularity) |
+| `recall` / `retrieve` | RAG over the official study materials: hashed word + char-trigram TF-IDF embeddings, cosine retrieval + paraphrase-bridge rerank; fetches `/study-materials` automatically | list of passages, ≤ 900 o200k tokens, runner-up doc always included |
+| `navigate` | next node on the least-cost route (`GET /graph?map_id=…`) | next node label |
+| `route` | full least-cost node path | `A -> B -> D \| total cost …` |
+| `find_open_venues` / `venues_open` / `where_to_eat` | venues open at a time on a day (`GET /venues/{day}`) | comma-separated names |
+| `find_meeting_window` / `meeting_window` | clean-window-first meeting time (`GET /schedule/{person}/{day}` + own busy/tentative/inbox) | `HH:MM-HH:MM` |
+| `find_meeting_point` / `meeting_point` | median grid point minimising total Manhattan travel (`GET /location/{person}/{day}`) | `[x, y]` |
+| `plan_outing` / `outing` | meeting window + meeting point + place to eat, whole journey minimised | window, point, venue |
 
 ## Project Structure & Module Organization
 
@@ -98,9 +105,9 @@ Tools in `app/mcp_server.py`:
 - `app/models.py` — Pydantic request/response schemas for all challenge endpoints.
 - `app/strategy.py` — pure decision logic for the SHOWDOWN betting bot (equity, pot odds, legal-action guard).
 - `app/ghost_chains.py` — stateful scoring engine for the Ghost Chains AML challenge.
-- `app/mcp_server.py` — MCP server (JSON-RPC over Streamable HTTP) for the Tool-box / Nursery challenge.
+- `app/mcp_server2.py` — MCP server (JSON-RPC over Streamable HTTP via FastMCP) for the Tool-box / Nursery challenge: phase 1 tools, RAG recall, graph navigation, and the phase 3 city-and-clock tools.
 - `app/routers/` — APIRouters for `/solve`, `/move`, `/ghost-chains/*`.
-- `tests/` — pytest suite; `tests/test_main.py` covers the API, `tests/test_strategy.py` covers strategy logic, `tests/test_mcp.py` covers the MCP tools, `tests/test_ghost_chains.py` covers Ghost Chains.
+- `tests/` — pytest suite; `tests/test_main.py` covers the API, `tests/test_strategy.py` covers strategy logic, `tests/test_mcp.py` covers the MCP transport, `tests/test_toolbox.py` covers the RAG recall and phase 3 tools, `tests/test_ghost_chains.py` covers Ghost Chains.
 - `main.py` — root entry-point stub.
 - `pyproject.toml` — project metadata, dependencies, and uv config.
 - `render.yaml` — Render web service deployment config.

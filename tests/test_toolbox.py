@@ -117,8 +117,8 @@ def test_navigate_respects_visited():
 
 
 def test_navigate_hop_limit():
-    path, _ = tb._find_path("m", "A", "D", 1, [], "", GRAPH)
-    assert path is None  # needs 2 hops
+    with pytest.raises(tb.ToolboxError):
+        tb._find_path("m", "A", "D", 1, [], "", GRAPH)
 
 
 # ----------------------------------------------------------------------
@@ -168,13 +168,13 @@ def test_venues_open_tool_returns_joined_names(client):
 
 
 def test_window_clean_beats_earlier_tentative():
+    # 12:00-13:00 TENTATIVE, 13:00-14:00 free -> the clean 13:00 slot wins.
     window = tb.find_meeting_window(
         "Tuesday",
         "12:00",
         "14:00",
         duration_minutes=60,
         people=["ada"],
-        busy=[["13:00", "14:00"]],
         tentative=[["12:00", "13:00"]],
         schedules={"ada": {"busy": []}},
     )
@@ -182,6 +182,8 @@ def test_window_clean_beats_earlier_tentative():
 
 
 def test_window_tentative_gives_way_when_nothing_clean():
+    # 12:00-13:00 TENTATIVE, 13:00-14:00 ACCEPTED -> nothing clean, the
+    # tentative slot gives way.
     window = tb.find_meeting_window(
         "Tuesday",
         "12:00",
@@ -192,7 +194,7 @@ def test_window_tentative_gives_way_when_nothing_clean():
         tentative=[["12:00", "13:00"]],
         schedules={"ada": {"busy": []}},
     )
-    assert window == "13:00-14:00"
+    assert window == "12:00-13:00"
 
 
 def test_window_friend_busy_blocks():

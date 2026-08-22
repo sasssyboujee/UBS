@@ -48,11 +48,35 @@ fi
 NAV_OUT=$(curl -fsS -m 20 -X POST "$BASE/mcp" \
   -H 'Content-Type: application/json' \
   -H 'Accept: application/json, text/event-stream' \
-  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"navigate","arguments":{"map_id":"gAAAAABqiRi6wK6JieL40yLCnrNMcbPcHQcorviBv8fmWThjzuLkHN26Z6QFjpqIQDFJzt8cPOwbNKe0WQcQM7QurbhI0Nx9kA==","from":"N11","to":"N04"}}}')
+  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"navigate","arguments":{"map_id":"gAAAAABqiRi6wK6JieL40yLCnrNMcbPcHQcorviBv8fmWThjzuLkHN26Z6QFjpqIQDFJzt8cPOwbNKe0WQcQM7QurbhI0Nx9kA==","from_node":"N11","to":"N04"}}}')
 case "$NAV_OUT" in
   *'"text":"N07"'*) echo "  ok: navigate returns N07 for the known map" ;;
   *) echo "FAIL: navigate did not return N07 (got: $(echo "$NAV_OUT" | head -c 160))"; fail=1 ;;
 esac
+
+# 5) Phase 3: venues open on Monday at 20:00.
+if curl -fsS -m 20 -X POST "$BASE/mcp" \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"find_open_venues","arguments":{"day":"Monday","time":"20:00"}}}' \
+  | grep -q 'Nine Quarters'; then
+  echo "  ok: find_open_venues returns Nine Quarters"
+else
+  echo "FAIL: find_open_venues did not answer (deploy may not be live yet)"
+  fail=1
+fi
+
+# 6) Phase 3: meeting window for ada on Tuesday 13:00-18:00.
+if curl -fsS -m 20 -X POST "$BASE/mcp" \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"find_meeting_window","arguments":{"day":"Tuesday","start":"13:00","end":"18:00","duration_minutes":60,"people":["ada"]}}}' \
+  | grep -q '14:00-15:00'; then
+  echo "  ok: find_meeting_window returns 14:00-15:00"
+else
+  echo "FAIL: find_meeting_window did not answer (deploy may not be live yet)"
+  fail=1
+fi
 
 if [ "$fail" = "0" ]; then
   echo "READY - safe to submit an evaluation."
