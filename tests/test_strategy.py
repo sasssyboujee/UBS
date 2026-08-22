@@ -1,6 +1,8 @@
 from app.models import HandResult, MoveRequest
 from app.strategy import (
     _codename_observations,
+    _post_reveal_opp_weights,
+    _post_reveal_opp_weights_observed,
     _record_recent_hands,
     _reset_learning,
     _rule_showdown,

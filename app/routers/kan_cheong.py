@@ -1,19 +1,14 @@
-import asyncio
-from concurrent.futures import ProcessPoolExecutor
-
 from fastapi import APIRouter
 
-from app.kan_cheong import solve_case  # wherever solve_case actually lives
+from app.simple_kancheong import solve_case
 
 router = APIRouter()
-
-TOTAL_BUDGET_SEC = 9.0  # leave headroom under the 10s hard cutoff
-_executor = ProcessPoolExecutor()  # module-level: reused across requests, not recreated per call
 
 
 @router.post("/kan-cheong-delivery-driver")
 async def kan_cheong_delivery_driver(request: dict):
     """Batch route: solve each case independently and return the same id map."""
+<<<<<<< HEAD
     loop = asyncio.get_running_loop()
     deadline = loop.time() + TOTAL_BUDGET_SEC
 
@@ -34,3 +29,6 @@ async def kan_cheong_delivery_driver(request: dict):
         *(run_case(cid, case) for cid, case in request.items())
     )
     return dict(results)
+=======
+    return {case_id: solve_case(case) for case_id, case in request.items()}
+>>>>>>> 88a3e8d3a6e260cb60b952b648f8a717b7311b35
