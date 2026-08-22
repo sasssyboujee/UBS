@@ -60,10 +60,22 @@ Heads-up no-limit betting game between bots. We expose one HTTP endpoint; the co
 
 ### Bot strategy (`app/strategy.py`)
 
-- `pre_reveal_equity(card)` = `(11 * card + 1) / 169` vs a random opponent.
+- `pre_reveal_equity(card)` = `(22 * card + 15) / 338` vs a random opponent.
 - `post_reveal_equity(card, community)` = `25/26` for a pair; otherwise `(wins + 0.5 ties) / 13`.
-- Decide via pot odds vs equity with aggression-adjusted margins; value-raise strong cards, fold weak hands to big bets, occasional deterministic bluffs, never fold a pair.
+- Range-aware decisions: when facing bets/raises, judge our hand against an estimated opponent range instead of a random hand; value-raise strong cards, fold weak hands to big bets, occasional deterministic bluffs, never fold a pair, and never re-raise a non-pair into a raise post-reveal.
 - Unknown `table_rule` values fall back to a conservative check/call-small/fold strategy. Phase guides add twists on top of this page's rules.
+
+## Ghost Chains Challenge
+
+Real-time AML transaction risk scoring over a rolling 24-hour directed graph.
+
+- `GET /ghost-chains/health` → `{"status": "ok"}`.
+- `POST /ghost-chains/reset` — clears all graph/idempotency state.
+- `POST /ghost-chains/transactions` — scores each transaction in `[0, 1]` sequentially, preserving order.
+
+`app/ghost_chains.py` keeps the stateful engine: transitive reachability closure over active edges, incremental edge insertion, expiry of edges older than 24h (boundary inclusive), idempotency by `txId`, and a structural raw score = `new_paths + 2*parallel_paths + 10*cycle + 15*multi_loop_nodes`, mapped monotonically to `[0,1]`.
+
+Phase 1 scores only the structural signal: extension < convergence < single return < multi-loop return. Phases 2 and 3 will layer identity (ip/device) and amount-trail signals on top; optionals are stored but ignored for now.
 
 ## Tool-box / Nursery Challenge
 
@@ -83,10 +95,12 @@ Tools in `app/mcp_server.py`:
 ## Project Structure & Module Organization
 
 - `app/` — FastAPI source; `app/main.py` defines the app, routes, and middleware.
-- `app/models.py` — Pydantic request/response schemas for the SHOWDOWN `/move` endpoint.
+- `app/models.py` — Pydantic request/response schemas for all challenge endpoints.
 - `app/strategy.py` — pure decision logic for the SHOWDOWN betting bot (equity, pot odds, legal-action guard).
+- `app/ghost_chains.py` — stateful scoring engine for the Ghost Chains AML challenge.
 - `app/mcp_server.py` — MCP server (JSON-RPC over Streamable HTTP) for the Tool-box / Nursery challenge.
-- `tests/` — pytest suite; `tests/test_main.py` covers the API, `tests/test_strategy.py` covers strategy logic, `tests/test_mcp.py` covers the MCP tools.
+- `app/routers/` — APIRouters for `/solve`, `/move`, `/ghost-chains/*`.
+- `tests/` — pytest suite; `tests/test_main.py` covers the API, `tests/test_strategy.py` covers strategy logic, `tests/test_mcp.py` covers the MCP tools, `tests/test_ghost_chains.py` covers Ghost Chains.
 - `main.py` — root entry-point stub.
 - `pyproject.toml` — project metadata, dependencies, and uv config.
 - `render.yaml` — Render web service deployment config.
