@@ -1043,11 +1043,17 @@ def _phase3_move(req: MoveRequest, legal: set[str], codename: str) -> MoveRespon
     if req.round == "pre_reveal":
         s1 = _equity_pre(card, codename)
         steal_ok = s1 >= _P3_STEAL and _opponents_behind(req) <= _P3_STEAL_MAX_BEHIND
+        # The learned model is biased by selective showdown sampling, so the
+        # absolute equity of mid-high cards is inflated. Shove pre-reveal only
+        # with the single best card under the (possibly learned) rule.
+        best_s1 = max(_equity_pre(c, codename) for c in range(1, 14))
+        monster = s1 >= _P3_MONSTER and s1 >= best_s1 - 1e-9
     else:
         if comm is None:
             return MoveResponse(action="check" if to_call == 0 else "fold")
         s1 = _equity_post(card, comm, codename)
         steal_ok = False
+        monster = s1 >= _P3_MONSTER
 
     if not learned:
         # Exploration: keep pots tiny and reach showdown cheaply to learn the
@@ -1060,7 +1066,7 @@ def _phase3_move(req: MoveRequest, legal: set[str], codename: str) -> MoveRespon
             return MoveResponse(action="fold")
         return MoveResponse(action="check")
 
-    if s1 >= _P3_MONSTER:
+    if monster:
         if to_call == 0:
             if "raise" in legal and req.max_raise_to is not None:
                 return MoveResponse(action="raise", amount=req.max_raise_to)
