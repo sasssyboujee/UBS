@@ -1,8 +1,7 @@
-import json
 import heapq
 import itertools
 import math
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 EPS = 1e-9
@@ -17,7 +16,7 @@ def parse_iso8601(timestamp: str) -> int:
 
 def format_iso8601(timestamp: int) -> str:
     return (
-        datetime.fromtimestamp(timestamp, tz=timezone.utc)
+        datetime.fromtimestamp(timestamp, tz=UTC)
         .isoformat()
         .replace("+00:00", "Z")
     )
