@@ -16,10 +16,26 @@ observations is safe.
 
 from __future__ import annotations
 
+import json
+import os
+import tempfile
 import zlib
 from collections import OrderedDict
+from pathlib import Path
 
 from app.models import MoveRequest, MoveResponse
+
+# Persisted learning state: the phase-2 docs guarantee that the leg order and
+# each leg's table rule are identical on every retry, so models learned in one
+# attempt stay valid for the next. Render's container filesystem survives
+# between requests and attempts (it is only wiped on redeploy/restart), which
+# lets retries compound instead of re-learning from scratch every time.
+_STATE_PATH = Path(
+    os.environ.get(
+        "SHOWDOWN_STATE_PATH",
+        str(Path(tempfile.gettempdir()) / "showdown_learn_state.json"),
+    )
+)
 
 KNOWN_TABLE_RULES = {"standard"}
 
@@ -62,6 +78,84 @@ def _reset_learning() -> None:
     _OPP_POST_BET_CARDS.clear()
     _OPP_POST_RAISE_CARDS.clear()
     _SEEN_HANDS.clear()
+    try:
+        _STATE_PATH.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _save_state() -> None:
+    """Persist learned models to disk (best effort, never raises)."""
+    payload = {
+        "rule_stats": {
+            name: {"wins": stats["wins"], "games": stats["games"]}
+            for name, stats in _RULE_STATS.items()
+        },
+        "rule_pairs": {
+            name: {f"{c},{o},{m}": value for (c, o, m), value in pairs.items()}
+            for name, pairs in _RULE_PAIRS.items()
+        },
+        "opp_pre_raise": list(_OPP_PRE_RAISE_CARDS),
+        "opp_post_bet": list(_OPP_POST_BET_CARDS),
+        "opp_post_raise": list(_OPP_POST_RAISE_CARDS),
+    }
+    try:
+        _STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = _STATE_PATH.with_suffix(".json.tmp")
+        tmp_path.write_text(json.dumps(payload, separators=(",", ":")))
+        tmp_path.replace(_STATE_PATH)
+    except (OSError, ValueError):
+        pass  # persistence must never break a /move reply
+
+
+def _load_state() -> None:
+    """Restore learned models from disk, merging into module memory."""
+    try:
+        payload = json.loads(_STATE_PATH.read_text())
+    except (OSError, ValueError):
+        return
+    if not isinstance(payload, dict):
+        return
+
+    rule_stats = payload.get("rule_stats")
+    if isinstance(rule_stats, dict):
+        for name, entry in rule_stats.items():
+            wins = entry.get("wins") if isinstance(entry, dict) else None
+            games = entry.get("games") if isinstance(entry, dict) else None
+            if (
+                isinstance(wins, list)
+                and isinstance(games, list)
+                and len(wins) == _HAND_TYPES
+                and len(games) == _HAND_TYPES
+            ):
+                _RULE_STATS[name] = {
+                    "wins": [float(x) for x in wins],
+                    "games": [float(x) for x in games],
+                }
+
+    rule_pairs = payload.get("rule_pairs")
+    if isinstance(rule_pairs, dict):
+        for name, entries in rule_pairs.items():
+            if not isinstance(entries, dict):
+                continue
+            pairs: dict[tuple[int, int, int], float] = {}
+            for key, value in entries.items():
+                try:
+                    c, o, m = (int(part) for part in key.split(","))
+                except (AttributeError, ValueError):
+                    continue
+                pairs[(c, o, m)] = float(value)
+            if pairs:
+                _RULE_PAIRS.setdefault(name, {}).update(pairs)
+
+    for field, target in (
+        ("opp_pre_raise", _OPP_PRE_RAISE_CARDS),
+        ("opp_post_bet", _OPP_POST_BET_CARDS),
+        ("opp_post_raise", _OPP_POST_RAISE_CARDS),
+    ):
+        observed = payload.get(field)
+        if isinstance(observed, list):
+            target.extend(int(x) for x in observed if isinstance(x, int))
 
 
 def _hand_index(card: int, paired: bool) -> int:
@@ -248,16 +342,21 @@ def _record_recent_hands(req: MoveRequest) -> None:
         seen = set()
         _SEEN_HANDS[key] = seen
 
+    changed = False
     for hand in req.recent_hands or []:
         digest = _hand_hash(hand)
         if digest in seen:
             continue
         seen.add(digest)
         _record_hand(req, codename, hand)
+        changed = True
 
     _SEEN_HANDS.move_to_end(key)
     while len(_SEEN_HANDS) > _SEEN_MAX_KEYS:
         _SEEN_HANDS.popitem(last=False)
+
+    if changed:
+        _save_state()
 
 
 # ---------------------------------------------------------------------------
@@ -568,28 +667,41 @@ def _post_reveal(req: MoveRequest, legal: set[str], codename: str = "standard") 
 # ---------------------------------------------------------------------------
 
 
+def _rule_confidence(obs: int) -> float:
+    """0..1 confidence in the learned model for a codename.
+
+    Aggression under an unknown rule scales with this: with few showdowns
+    the model is mostly the standard-rule prior, which may be badly wrong
+    for the leg's real rule, so we keep pots small until it earns trust.
+    """
+    return min(1.0, obs / 12.0)
+
+
 def _rule_pre_reveal(req: MoveRequest, legal: set[str], codename: str) -> MoveResponse:
     """Pre-reveal play under an unknown rule.
 
     With few observations we keep pots small and call modest raises so hands
     reach showdown and the rule gets learned. Once the codename is understood
-    we use the learned equity to value-raise and fold correctly.
+    we use the learned equity to value-raise and fold correctly. Pot control
+    is capped by confidence so a wrong prior can never cost the stack.
     """
     card = req.your_number or 1
     to_call = req.to_call or 0
     pot = req.pot or 0
     stack = req.your_stack or 0
     obs = _codename_observations(codename)
+    conf = _rule_confidence(obs)
 
     if to_call == 0:
         if obs >= 4 and "raise" in legal:
             equity = _equity_pre(card, codename)
-            if equity > 0.72:
-                return MoveResponse(action="raise", amount=_clamp_raise(req, 0.7))
-            if equity > 0.55:
-                return MoveResponse(action="raise", amount=_clamp_raise(req, 0.6))
-            if equity < 0.30 and _chance(req, "bluff_pre_rule", 10):
-                return MoveResponse(action="raise", amount=_clamp_raise(req, 0.5))
+            frac = 0.25 + 0.35 * conf  # 0.25 .. 0.60 pot
+            if equity > 0.80 - 0.10 * conf:
+                return MoveResponse(action="raise", amount=_clamp_raise(req, frac))
+            if equity > 0.55 + 0.25 * (1 - conf):
+                return MoveResponse(action="raise", amount=_clamp_raise(req, frac * 0.7))
+            if conf >= 0.6 and equity < 0.30 and _chance(req, "bluff_pre_rule", 5):
+                return MoveResponse(action="raise", amount=_clamp_raise(req, min(frac, 0.4)))
         return MoveResponse(action="check")
 
     equity = _range_equity_for(card, None, _pre_reveal_opp_weights_observed(), codename)
@@ -597,21 +709,31 @@ def _rule_pre_reveal(req: MoveRequest, legal: set[str], codename: str) -> MoveRe
 
     if obs < 4:
         # Exploration: pay small raises to reach showdown and learn the rule.
-        if to_call <= max(3, int(0.10 * stack)) and "call" in legal:
+        if to_call <= max(3, int(0.12 * stack)) and "call" in legal:
             return MoveResponse(action="call")
-        if equity > odds + 0.10 and "call" in legal:
+        if equity > odds + 0.10 and to_call <= int(0.15 * stack) and "call" in legal:
             return MoveResponse(action="call")
         return MoveResponse(action="fold")
 
-    if equity > odds + 0.02:
-        if equity > 0.70 and "raise" in legal and to_call < 0.30 * stack:
-            return MoveResponse(action="raise", amount=_clamp_raise(req, 0.6))
+    margin = 0.02 + 0.10 * (1 - conf)
+    # Never commit more than a fifth of the stack pre-reveal under an
+    # uncertain rule unless the learned model is confident we dominate.
+    if to_call > int(0.20 * stack) and equity < 0.80:
+        return MoveResponse(action="fold")
+    if equity > odds + margin:
+        if equity > 0.75 and conf >= 0.6 and "raise" in legal and to_call < 0.15 * stack:
+            return MoveResponse(action="raise", amount=_clamp_raise(req, 0.25 + 0.30 * conf))
         return MoveResponse(action="call")
     return MoveResponse(action="fold")
 
 
 def _rule_post_reveal(req: MoveRequest, legal: set[str], codename: str) -> MoveResponse:
-    """Post-reveal play under an unknown rule using learned equities."""
+    """Post-reveal play under an unknown rule using learned equities.
+
+    Sizing and the threshold for betting rise with confidence in the learned
+    model. Calls are hard-capped by stack fraction so a misread rule can bleed
+    small pots but can never stack us in one hand.
+    """
     card = req.your_number or 1
     community = req.community_number
     if community is None:
@@ -621,16 +743,16 @@ def _rule_post_reveal(req: MoveRequest, legal: set[str], codename: str) -> MoveR
     pot = req.pot or 0
     stack = req.your_stack or 0
     obs = _codename_observations(codename)
+    conf = _rule_confidence(obs)
     equity = _equity_post(card, community, codename)
 
     if to_call == 0:
         if obs >= 3 and "bet" in legal:
-            if equity > 0.75:
-                return MoveResponse(action="bet", amount=_clamp_raise(req, 0.75))
-            if equity > 0.55:
-                return MoveResponse(action="bet", amount=_clamp_raise(req, 0.6))
-            if equity < 0.30 and _chance(req, "bluff_post_rule", 10):
-                return MoveResponse(action="bet", amount=_clamp_raise(req, 0.5))
+            frac = 0.30 + 0.40 * conf  # 0.30 .. 0.70 pot
+            if equity > 0.90 - 0.35 * conf:
+                return MoveResponse(action="bet", amount=_clamp_raise(req, frac))
+            if conf >= 0.6 and equity < 0.30 and _chance(req, "bluff_post_rule", 5):
+                return MoveResponse(action="bet", amount=_clamp_raise(req, min(frac, 0.4)))
         return MoveResponse(action="check")
 
     last_opp = _last_opponent_action(req)
@@ -640,22 +762,28 @@ def _rule_post_reveal(req: MoveRequest, legal: set[str], codename: str) -> MoveR
     opp_weights = _post_reveal_opp_weights_observed(community, last_opp == "raise")
     range_equity = _range_equity_for(card, community, opp_weights, codename)
     odds = pot_odds(to_call, pot)
+    margin = 0.02 + 0.10 * (1 - conf)
 
-    # Strong learned hand: never fold to a reasonable bet even if the range
-    # model is pessimistic about the opponent's exact distribution.
-    if equity > 0.70 and to_call <= 0.35 * stack and "call" in legal:
-        if (last_opp == "bet" and equity > 0.72 and "raise" in legal
-                and to_call < 0.30 * stack):
-            return MoveResponse(action="raise", amount=_clamp_raise(req, 0.7))
+    # Pot control: never commit more than a third of the stack on one call
+    # unless the learned model is confident we are a big favourite.
+    if to_call > int(0.35 * stack):
+        if equity > 0.78 and conf >= 0.4 and "call" in legal:
+            return MoveResponse(action="call")
+        return MoveResponse(action="fold")
+
+    if equity > 0.70 and "call" in legal:
+        if (last_opp == "bet" and equity > 0.72 and conf >= 0.6
+                and "raise" in legal and to_call < 0.25 * stack):
+            return MoveResponse(action="raise", amount=_clamp_raise(req, 0.30 + 0.30 * conf))
         return MoveResponse(action="call")
 
     if obs < 4 and to_call <= max(3, int(0.10 * stack)) and "call" in legal:
         return MoveResponse(action="call")
 
-    if range_equity > odds + 0.02:
-        if (last_opp == "bet" and equity > 0.72 and "raise" in legal
-                and to_call < 0.30 * stack):
-            return MoveResponse(action="raise", amount=_clamp_raise(req, 0.7))
+    if to_call > int(0.15 * stack) and equity < 0.55:
+        return MoveResponse(action="fold")
+
+    if range_equity > odds + margin:
         return MoveResponse(action="call")
     return MoveResponse(action="fold")
 
@@ -709,3 +837,9 @@ def choose_action(req: MoveRequest) -> MoveResponse:
             resp = _rule_post_reveal(req, legal, codename)
 
     return _legalize(resp, req, legal)
+
+
+# Restore any models learned in earlier attempts at import time. Leg order
+# and per-leg rules are identical on every retry, so state from a previous
+# attempt is still valid for the codenames it describes.
+_load_state()
