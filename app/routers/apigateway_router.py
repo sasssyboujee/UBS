@@ -104,8 +104,7 @@ def _compute_slo(
 
     # Availability
     ok_count = sum(
-        1
-        for hb in window
+        1 for hb in window
         if hb.status.strip().upper() == "OK"
     )
 
