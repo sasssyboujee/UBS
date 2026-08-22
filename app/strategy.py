@@ -1270,6 +1270,18 @@ def _legalize(resp: MoveResponse, req: MoveRequest, legal: set[str]) -> MoveResp
     return MoveResponse(action=min(legal))
 
 
+def _is_safe(req: MoveRequest) -> bool:
+    """Check if our chip stack is safe given the tournament phase."""
+    delta = _our_chip_delta(req)
+    if req.phase >= 3 or len(req.players) > 2:
+        # Phase 3: Safe from Degen as long as we are not losing to anyone.
+        leader_delta = max((p.chip_delta for p in req.players if p.name != "you" and not p.busted), default=0)
+        return delta >= leader_delta
+    
+    # Phase 2: Safe from Degen as long as we haven't lost chips overall.
+    return delta >= 0
+
+
 def choose_action(req: MoveRequest) -> MoveResponse:
     """Pick the bot's next action for a /move request.
 
@@ -1283,9 +1295,8 @@ def choose_action(req: MoveRequest) -> MoveResponse:
     codename = req.table_rule or "standard"
 
     if req.phase >= 2 or codename != "standard" or len(req.players) > 2:
-        delta = _our_chip_delta(req)
         # Below safe threshold: play a disruptive, anti-bot line.
-        if delta < 75:
+        if not _is_safe(req):
             return _legalize(_degen_move(req, legal, codename), req, legal)
 
     if req.phase >= 3 or len(req.players) > 2:
