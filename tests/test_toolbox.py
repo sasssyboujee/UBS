@@ -358,3 +358,42 @@ def test_plan_outing_pulls_point_toward_venue():
     assert plan["venue"] == "Far Away"
     assert plan["point"] == "[0, 0]"
     assert plan["total_travel"] == 18
+
+
+def test_recall_prefers_designation_fact_over_noise():
+    # The exact "official designation" fact must rank top over a near-miss
+    # paragraph that also mentions flagship/trainset (brake torque).
+    brake = (
+        "Braking system calibration on the flagship fleet requires the caliper "
+        "clamping bolts to be torqued to nine newton-meters exactly. Technicians "
+        "use a dedicated calibrated torque wrench at each servicing depot."
+    )
+    fact = (
+        "The Cobalt Line's premium limited-stop service uses a trainset officially "
+        "designated the Wrenfield-Class. This low-floor articulated unit replaced "
+        "an older fleet nearing the end of its service life."
+    )
+    chunks = tb.recall(
+        "What is the official designation of the network's flagship trainset?",
+        _materials(brake, fact),
+    )
+    assert chunks
+    assert "Wrenfield" in " ".join(chunks)
+    assert chunks[0].count("Wrenfield") > 0  # fact chunk is the top pick
+
+
+def test_recall_drops_tiny_heading_chunks():
+    docs = _materials(
+        "## Overview\n\nThe Kesterline array was recalibrated on 14 March.",
+        "## Another Heading",
+    )
+    chunks = tb.recall("When was the Kesterline array recalibrated?", docs)
+    assert chunks
+    joined = " ".join(chunks)
+    assert "14 March" in joined
+    assert "Another Heading" not in joined  # heading-only chunk excluded
+
+
+def test_navigate_honours_hops_remaining_alias():
+    path, _ = tb._find_path("m", "A", "D", 2, [], "", GRAPH)
+    assert path == ["B", "D"]
