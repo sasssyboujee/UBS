@@ -2,10 +2,14 @@ Ghost Chains
 Event and Scoring
 This challenge is released in three cumulative phases.
 
-Current Phase	Evaluation Includes
-Phase 1	Phase 1 requirements
-Phase 2	Phases 1 and 2 requirements
-Phase 3	Phases 1, 2 and 3 requirements
+Current Phase Evaluation Includes
+
+# Phase 1 Phase 1 requirements
+
+# Phase 2 Phases 1 and 2 requirements
+
+# Phase 3 Phases 1, 2 and 3 requirements
+
 Each phase's evaluation re-tests the requirements of every earlier phase within the same evaluation run. A Phase 2 evaluation therefore re-checks Phase 1 behaviour, and a Phase 3 evaluation re-checks Phases 1 and 2 behaviour. Extend your system without breaking what already works.
 
 Phases Schedule
@@ -22,7 +26,7 @@ In addition, evaluating a phase during its active window grants an earliness bon
 
 Final standing reflects the two scored dimensions combined, with the per-phase earliness bonus applied.
 
-Phase start times are announced via the coordinator and the challenge room / Teams channel; they are not published in advance in these documents.
+# Phase start times are announced via the coordinator and the challenge room / Teams channel; they are not published in advance in these documents.
 
 System Requirements
 Service Overview
@@ -42,10 +46,12 @@ This endpoint is used to verify service availability.
 
 State Reset
 POST /ghost-chains/reset
-Request:
+
+#### Request
 
 { "clearTransactions": true }
-Response:
+
+#### Response
 
 { "clearTransactions": true }
 Behavior:
@@ -67,8 +73,9 @@ ipAddress (optional): Network address used to initiate the transaction. Omitted 
 deviceId (optional): Device identifier used to initiate the transaction. Omitted when unknown.
 Optional fields may be absent on any transaction; this must not cause processing to fail.
 
-Request:
+#### Request
 
+```json
 {
   "transactions": [
     {
@@ -85,21 +92,27 @@ Request:
       "amount": 100.0,
       "createdAt": "2026-06-08T12:01:00Z"
     }
-  ]
+```
+
+]
 }
 Response fields:
 
 transactions: Array of result objects:
 txId: Echoes the transaction identifier from the request.
 riskScore: Risk score in [0.0, 1.0].
-Response:
 
+#### Response
+
+```json
 {
   "transactions": [
     { "txId": "tx_meridian_001", "riskScore": 0.0 },
     { "txId": "tx_cascade_014", "riskScore": 0.0 }
   ]
 }
+```
+
 Behavior:
 
 Each transaction must be assigned a risk score immediately upon processing.
@@ -112,22 +125,27 @@ Register your public base URL with the coordinator and trigger an evaluation.
 curl -s http://localhost:8080/ghost-chains/health
 
 curl -s -X POST http://localhost:8080/ghost-chains/reset \
-  -H 'Content-Type: application/json' \
-  -d '{"clearTransactions": true}'
+-H 'Content-Type: application/json' \
+-d '{"clearTransactions": true}'
 
 curl -s -X POST http://localhost:8080/ghost-chains/transactions \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "transactions": [
-      {
-        "txId": "tx_meridian_001",
-        "fromUserId": "meridian_holdings",
-        "toUserId": "apex_logistics",
-        "amount": 370.0,
-        "createdAt": "2026-06-08T12:00:00Z"
-      }
+-H 'Content-Type: application/json' \
+-d '{
+"transactions": [
+
+```json
+{
+  "txId": "tx_meridian_001",
+  "fromUserId": "meridian_holdings",
+  "toUserId": "apex_logistics",
+  "amount": 370.0,
+  "createdAt": "2026-06-08T12:00:00Z"
+}
+```
+
     ]
-  }'
+
+}'
 State and Execution Model
 Build a stateful, streaming service that maintains a rolling graph of account transactions and assigns relative risk scores within a bounded lookback window.
 
@@ -168,9 +186,11 @@ The dataset is synthetic but designed to reflect realistic financial behaviour. 
 
 Entity names in the examples are synthetic and chosen to resemble counterparties that often appear in trade-based or layering typologies (holding companies, logistics fronts, payment intermediaries, and import/export shells).
 
-Phase 1 - Follow the Money (Structural Signal)
-Phase 1 Briefing
-Phase 1 briefing card
+# Phase 1 - Follow the Money (Structural Signal)
+
+# Phase 1 Briefing
+
+# Phase 1 briefing card
 
 In plain terms: watch how money moves between entities. A lonely Meridian Holdings → Apex Logistics transaction is usually boring. Money that travels onward, fans into the same destination, or — especially — loops back through entities you have already seen is more interesting.
 
@@ -181,25 +201,29 @@ Each incoming transaction updates a directed graph of entities.
 
 Risk score reflects how the transaction changes the graph's structural signal: the combined effect of new or shortened paths between entities, not any single graph feature. A higher risk score corresponds to a greater increase in the graph's capacity to support recurring flow. Edge cases the examples do not cover (for example degenerate or repeated edges) are left open — reason from the principle above.
 
-Phase 1 Objectives
+# Phase 1 Objectives
+
 Apply structural signal-based scoring
 Maintain consistent streaming graph state under Phase 1 rules
-Phase 1 Constraints Checklist
+
+# Phase 1 Constraints Checklist
+
 These cover how your service runs and responds. The scoring model is described above.
 
-Constraint	Expectation
-Score range	0.0 ≤ riskScore ≤ 1.0
-Lookback	Active history is the most recent 24 hours
-Batch processing	Process request array in order; preserve response order
-Idempotency	Duplicate txId → original score, no state mutation
-Missing optionals	Absent ipAddress / deviceId must not cause failure
-Unknown fields	Ignore gracefully
-Reset	Must fully clear graph / derived state
+Constraint Expectation
+Score range 0.0 ≤ riskScore ≤ 1.0
+Lookback Active history is the most recent 24 hours
+Batch processing Process request array in order; preserve response order
+Idempotency Duplicate txId → original score, no state mutation
+Missing optionals Absent ipAddress / deviceId must not cause failure
+Unknown fields Ignore gracefully
+Reset Must fully clear graph / derived state
 Later phases introduce additional signals; behaviours not covered here are left for you to reason about.
 
 Evasion via missing identity. Later phases may treat a change in optional identity fields as a signal — in particular, a flow that carries a network address or device identifier on some legs and stops carrying it on a later connected leg. Absence on isolated transactions is not suspicious; absence where a connected flow previously carried the attribute may be an attempt to break the trail. Design your identity handling so present and absent fields are both observable states.
 
-Phase 1 Examples
+# Phase 1 Examples
+
 These examples show transaction sequences from first to last. Assume that the preceding transactions have already been scored, and that the final transaction is now being evaluated.
 
 Example 1 - Isolated
@@ -245,13 +269,18 @@ These examples are intended to illustrate increasing structural signal. For the 
 Example 1 should receive the lowest risk score of the five.
 Example 4 should receive a meaningfully higher risk score than Example 2.
 Example 5 should receive a meaningfully higher risk score than Example 4. Two independent return paths converging on the same node represent a stronger structural signal than a single return.
-Phase 1 Diagnostics Vocabulary
-Phase 1 evaluations can emit the following observation categories:
+
+# Phase 1 Diagnostics Vocabulary
+
+# Phase 1 evaluations can emit the following observation categories:
 
 STRUCTURAL_DEVIATION: Disagreement detected in the evaluation of structural signals.
 TEMPORAL_DEVIATION: Disagreement detected in temporal signal evaluation or lookback window handling.
 Later Phases (locked)
-Phase	Theme	Status
-Phase 2	Shared devices / IPs (identity signal)	Unlocked during the event
-Phase 3	Amount trails along flows (value signal)	Unlocked during the event
+Phase Theme Status
+
+# Phase 2 Shared devices / IPs (identity signal) Unlocked during the event
+
+# Phase 3 Amount trails along flows (value signal) Unlocked during the event
+
 Design your service so optional fields can be ignored today and used tomorrow. Official Phase 2 and Phase 3 documents will be released when those phases start.

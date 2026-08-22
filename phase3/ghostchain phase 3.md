@@ -1,11 +1,16 @@
-Phase 3 - Value Signal
+# Phase 3 - Value Signal
+
 Event and Scoring
 This challenge is released in three cumulative phases.
 
-Current Phase	Evaluation Includes
-Phase 1	Phase 1 requirements
-Phase 2	Phases 1 and 2 requirements
-Phase 3	Phases 1, 2 and 3 requirements
+Current Phase Evaluation Includes
+
+# Phase 1 Phase 1 requirements
+
+# Phase 2 Phases 1 and 2 requirements
+
+# Phase 3 Phases 1, 2 and 3 requirements
+
 Each phase's evaluation re-tests the requirements of every earlier phase within the same evaluation run. A Phase 2 evaluation therefore re-checks Phase 1 behaviour, and a Phase 3 evaluation re-checks Phases 1 and 2 behaviour. Extend your system without breaking what already works.
 
 Phases Schedule
@@ -22,7 +27,7 @@ In addition, evaluating a phase during its active window grants an earliness bon
 
 Final standing reflects the two scored dimensions combined, with the per-phase earliness bonus applied.
 
-Phase start times are announced via the coordinator and the challenge room / Teams channel; they are not published in advance in these documents.
+# Phase start times are announced via the coordinator and the challenge room / Teams channel; they are not published in advance in these documents.
 
 System Requirements
 Service Overview
@@ -42,10 +47,12 @@ This endpoint is used to verify service availability.
 
 State Reset
 POST /ghost-chains/reset
-Request:
+
+#### Request
 
 { "clearTransactions": true }
-Response:
+
+#### Response
 
 { "clearTransactions": true }
 Behavior:
@@ -67,8 +74,9 @@ ipAddress (optional): Network address used to initiate the transaction. Omitted 
 deviceId (optional): Device identifier used to initiate the transaction. Omitted when unknown.
 Optional fields may be absent on any transaction; this must not cause processing to fail.
 
-Request:
+#### Request
 
+```json
 {
   "transactions": [
     {
@@ -85,21 +93,27 @@ Request:
       "amount": 100.0,
       "createdAt": "2026-06-08T12:01:00Z"
     }
-  ]
+```
+
+]
 }
 Response fields:
 
 transactions: Array of result objects:
 txId: Echoes the transaction identifier from the request.
 riskScore: Risk score in [0.0, 1.0].
-Response:
 
+#### Response
+
+```json
 {
   "transactions": [
     { "txId": "tx_meridian_001", "riskScore": 0.0 },
     { "txId": "tx_cascade_014", "riskScore": 0.0 }
   ]
 }
+```
+
 Behavior:
 
 Each transaction must be assigned a risk score immediately upon processing.
@@ -112,22 +126,27 @@ Register your public base URL with the coordinator and trigger an evaluation.
 curl -s http://localhost:8080/ghost-chains/health
 
 curl -s -X POST http://localhost:8080/ghost-chains/reset \
-  -H 'Content-Type: application/json' \
-  -d '{"clearTransactions": true}'
+-H 'Content-Type: application/json' \
+-d '{"clearTransactions": true}'
 
 curl -s -X POST http://localhost:8080/ghost-chains/transactions \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "transactions": [
-      {
-        "txId": "tx_meridian_001",
-        "fromUserId": "meridian_holdings",
-        "toUserId": "apex_logistics",
-        "amount": 370.0,
-        "createdAt": "2026-06-08T12:00:00Z"
-      }
+-H 'Content-Type: application/json' \
+-d '{
+"transactions": [
+
+```json
+{
+  "txId": "tx_meridian_001",
+  "fromUserId": "meridian_holdings",
+  "toUserId": "apex_logistics",
+  "amount": 370.0,
+  "createdAt": "2026-06-08T12:00:00Z"
+}
+```
+
     ]
-  }'
+
+}'
 State and Execution Model
 Build a stateful, streaming service that maintains a rolling graph of account transactions and assigns relative risk scores within a bounded lookback window.
 
@@ -156,8 +175,10 @@ Observation categories describe where evaluator disagreement was detected. Multi
 
 Diagnostic Payload Format
 STRUCTURAL_DEVIATION: Moderate, TEMPORAL_DEVIATION: Low
-Phase 3 Briefing
-Phase 3 briefing card
+
+# Phase 3 Briefing
+
+# Phase 3 briefing card
 
 Some networks go dark: no IP, no device fingerprint. Just the money, moving in ways that betray its origin.
 
@@ -178,7 +199,8 @@ Interpret amount progression inside inferred flow segments
 Earlier Phases
 All Phase 1 and Phase 2 requirements continue to apply in Phase 3. The Phase 1 Constraints Checklist still applies. Phase 3 introduces no new mechanical requirements; it interprets amount as a value signal (see Core Principle). Behaviours not covered here are left for you to reason about.
 
-Phase 3 Examples
+# Phase 3 Examples
+
 These examples show transaction sequences from first to last. Assume that the preceding transactions have already been scored, and that the final transaction is now being evaluated. Amounts use a single synthetic currency unit.
 
 Example 1 - Consistent Value Decay
@@ -226,7 +248,8 @@ The following examples show transactions where structural, identity, and value o
 
 Each example shows a sequence from first to last. The final transaction is the one being evaluated.
 
-Phase 1 and Phase 2
+# Phase 1 and Phase 2
+
 Meridian Holdings → Apex Logistics (deviceId: dev_ios_7f3a91)
 Apex Logistics → Cascade Payments (deviceId: dev_ios_7f3a91)
 Cascade Payments → Horizon Capital (deviceId: dev_android_c2e4b8)
@@ -236,7 +259,9 @@ Interpretation:
 Transaction 4 closes a directed cycle: Horizon Capital returns value to Meridian Holdings, an upstream origin in the active path. The path Meridian Holdings → Apex Logistics → Cascade Payments → Horizon Capital → Meridian Holdings is now closed.
 The device fingerprint changes at Cascade Payments → Horizon Capital. The cycle is completed on device dev_android_c2e4b8, while earlier edges used dev_ios_7f3a91.
 Structural and identity observations are simultaneously present for the final transaction.
-Phase 1 and Phase 3
+
+# Phase 1 and Phase 3
+
 Meridian Holdings → Apex Logistics (10000)
 Apex Logistics → Cascade Payments (9800)
 Cascade Payments → Horizon Capital (9700)
@@ -246,7 +271,9 @@ Interpretation:
 Transaction 4 creates a return path: Horizon Capital sends to Apex Logistics, a counterparty from which Horizon Capital indirectly received value. A path Apex Logistics → Cascade Payments → Horizon Capital → Apex Logistics is now present.
 The amount for Horizon Capital → Apex Logistics (9850) exceeds the preceding Cascade Payments → Horizon Capital edge (9700).
 Structural and value observations are simultaneously present for the final transaction.
-Phase 2 and Phase 3
+
+# Phase 2 and Phase 3
+
 Meridian Holdings → Apex Logistics (10000, ipAddress: 10.0.0.1)
 Cascade Payments → Horizon Capital (10000, ipAddress: 10.0.0.1)
 Apex Logistics → Nimbus Trading (9800, ipAddress: 10.0.0.1)
@@ -257,8 +284,10 @@ Transactions 1–3 share a network address across two structurally disconnected 
 Transaction 4 creates structural convergence at Nimbus Trading, joining the two previously independent chains. It carries a different network address from transactions 1–3, introducing a change in identity at the convergence point.
 The amount for Horizon Capital → Nimbus Trading (10100) exceeds Cascade Payments → Horizon Capital (10000).
 Structural, identity, and value observations are each present for the final transaction.
-Phase 3 Diagnostics Vocabulary
-Phase 3 evaluations can emit the following observation categories:
+
+# Phase 3 Diagnostics Vocabulary
+
+# Phase 3 evaluations can emit the following observation categories:
 
 STRUCTURAL_DEVIATION: Disagreement detected in the evaluation of structural signals.
 TEMPORAL_DEVIATION: Disagreement detected in temporal signal evaluation or lookback window handling.

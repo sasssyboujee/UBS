@@ -1,5 +1,6 @@
 import base64
 import json
+import logging
 import math
 
 from fastapi import APIRouter, HTTPException, status
@@ -13,6 +14,8 @@ from app.models import (
     SolveRequest,
     SolveResponse,
 )
+
+logger = logging.getLogger("uvicorn.error")
 
 router = APIRouter()
 
@@ -103,20 +106,14 @@ def _compute_slo(
             p95LatencyMs=0,
         )
 
-    # Availability
+    # Availability: successful heartbeats / total heartbeats in the window.
     ok_count = sum(
         1
         for hb in window
         if hb.status.strip().upper() == "OK"
     )
 
-    fail_count = sum(
-        1
-        for hb in window
-        if hb.status.strip().upper() == "FAIL"
-    )
-
-    availability = ok_count / (ok_count + fail_count)
+    availability = ok_count / len(window)
     # P95
     latencies = sorted(
         hb.latencyMs
@@ -143,6 +140,8 @@ async def solve_challenge(
     try:
         data = _decode_payload(request.payload)
 
+        logger.info("SOLVE decoded=%s", json.dumps(data, default=str))
+
         decoded = DecodedPayload(**data)
 
         adapt_output = _adapt_input(
@@ -154,10 +153,14 @@ async def solve_challenge(
             decoded.sloQuery,
         )
 
-        return SolveResponse(
+        response = SolveResponse(
             adaptOutput=adapt_output,
             sloOutput=slo_output,
         )
+
+        logger.info("SOLVE response=%s", response.model_dump_json())
+
+        return response
 
     except ValueError as e:
         raise HTTPException(

@@ -1,11 +1,16 @@
-Phase 2 - Identity Signal
+# Phase 2 - Identity Signal
+
 Event and Scoring
 This challenge is released in three cumulative phases.
 
-Current Phase	Evaluation Includes
-Phase 1	Phase 1 requirements
-Phase 2	Phases 1 and 2 requirements
-Phase 3	Phases 1, 2 and 3 requirements
+Current Phase Evaluation Includes
+
+# Phase 1 Phase 1 requirements
+
+# Phase 2 Phases 1 and 2 requirements
+
+# Phase 3 Phases 1, 2 and 3 requirements
+
 Each phase's evaluation re-tests the requirements of every earlier phase within the same evaluation run. A Phase 2 evaluation therefore re-checks Phase 1 behaviour, and a Phase 3 evaluation re-checks Phases 1 and 2 behaviour. Extend your system without breaking what already works.
 
 Phases Schedule
@@ -22,7 +27,7 @@ In addition, evaluating a phase during its active window grants an earliness bon
 
 Final standing reflects the two scored dimensions combined, with the per-phase earliness bonus applied.
 
-Phase start times are announced via the coordinator and the challenge room / Teams channel; they are not published in advance in these documents.
+# Phase start times are announced via the coordinator and the challenge room / Teams channel; they are not published in advance in these documents.
 
 System Requirements
 Service Overview
@@ -42,10 +47,12 @@ This endpoint is used to verify service availability.
 
 State Reset
 POST /ghost-chains/reset
-Request:
+
+#### Request
 
 { "clearTransactions": true }
-Response:
+
+#### Response
 
 { "clearTransactions": true }
 Behavior:
@@ -67,8 +74,9 @@ ipAddress (optional): Network address used to initiate the transaction. Omitted 
 deviceId (optional): Device identifier used to initiate the transaction. Omitted when unknown.
 Optional fields may be absent on any transaction; this must not cause processing to fail.
 
-Request:
+#### Request
 
+```json
 {
   "transactions": [
     {
@@ -85,21 +93,27 @@ Request:
       "amount": 100.0,
       "createdAt": "2026-06-08T12:01:00Z"
     }
-  ]
+```
+
+]
 }
 Response fields:
 
 transactions: Array of result objects:
 txId: Echoes the transaction identifier from the request.
 riskScore: Risk score in [0.0, 1.0].
-Response:
 
+#### Response
+
+```json
 {
   "transactions": [
     { "txId": "tx_meridian_001", "riskScore": 0.0 },
     { "txId": "tx_cascade_014", "riskScore": 0.0 }
   ]
 }
+```
+
 Behavior:
 
 Each transaction must be assigned a risk score immediately upon processing.
@@ -112,22 +126,27 @@ Register your public base URL with the coordinator and trigger an evaluation.
 curl -s http://localhost:8080/ghost-chains/health
 
 curl -s -X POST http://localhost:8080/ghost-chains/reset \
-  -H 'Content-Type: application/json' \
-  -d '{"clearTransactions": true}'
+-H 'Content-Type: application/json' \
+-d '{"clearTransactions": true}'
 
 curl -s -X POST http://localhost:8080/ghost-chains/transactions \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "transactions": [
-      {
-        "txId": "tx_meridian_001",
-        "fromUserId": "meridian_holdings",
-        "toUserId": "apex_logistics",
-        "amount": 370.0,
-        "createdAt": "2026-06-08T12:00:00Z"
-      }
+-H 'Content-Type: application/json' \
+-d '{
+"transactions": [
+
+```json
+{
+  "txId": "tx_meridian_001",
+  "fromUserId": "meridian_holdings",
+  "toUserId": "apex_logistics",
+  "amount": 370.0,
+  "createdAt": "2026-06-08T12:00:00Z"
+}
+```
+
     ]
-  }'
+
+}'
 State and Execution Model
 Build a stateful, streaming service that maintains a rolling graph of account transactions and assigns relative risk scores within a bounded lookback window.
 
@@ -156,8 +175,10 @@ Observation categories describe where evaluator disagreement was detected. Multi
 
 Diagnostic Payload Format
 STRUCTURAL_DEVIATION: Moderate, TEMPORAL_DEVIATION: Low
-Phase 2 Briefing
-Phase 2 briefing card
+
+# Phase 2 Briefing
+
+# Phase 2 briefing card
 
 Coordinated financial networks often share underlying infrastructure. Transactions that look unrelated on the graph may share a network address or device — a hint of common control.
 
@@ -178,7 +199,8 @@ Tolerate missing identity fields
 Earlier Phases
 All Phase 1 requirements continue to apply in Phase 2. The Phase 1 Constraints Checklist still applies. Phase 2 introduces no new mechanical requirements; it activates ipAddress and deviceId as identity signals (see Core Principle). Behaviours not covered here are left for you to reason about.
 
-Phase 2 Examples
+# Phase 2 Examples
+
 These examples show transaction sequences from first to last. Assume that the preceding transactions have already been scored, and that the final transaction is now being evaluated. These examples show how evidence changes — they do not define a strict risk ordering between scenarios.
 
 Example 1 - Consistent Identity
@@ -218,8 +240,10 @@ Example 1 (identity agreement): a single structural flow carries a consistent id
 Example 2 (identity divergence at a branch): the identity signal changes at one outgoing edge. The two branches now carry different identity evidence, and neither independently characterises the full reachable subgraph.
 Example 3 (identity disagreement within a continuous flow): the structural path remains unbroken, but the identity evidence changes partway through. Both observations are valid and must be weighed together rather than in isolation.
 Example 4 (identity reuse across disconnected components): the same identity signal appears in multiple unrelated components. This creates a potential cross-structural relationship not visible from graph structure alone, but does not independently establish risk.
-Phase 2 Diagnostics Vocabulary
-Phase 2 evaluations can emit the following observation categories:
+
+# Phase 2 Diagnostics Vocabulary
+
+# Phase 2 evaluations can emit the following observation categories:
 
 STRUCTURAL_DEVIATION: Disagreement detected in the evaluation of structural signals.
 TEMPORAL_DEVIATION: Disagreement detected in temporal signal evaluation or lookback window handling.
