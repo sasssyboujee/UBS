@@ -104,11 +104,18 @@ def _compute_slo(
 
     # Availability
     ok_count = sum(
-        1 for hb in window
+        1
+        for hb in window
         if hb.status.strip().upper() == "OK"
     )
 
-    availability = ok_count / len(window)
+    fail_count = sum(
+        1
+        for hb in window
+        if hb.status.strip().upper() == "FAIL"
+    )
+
+    availability = ok_count / (ok_count + fail_count)
     # P95
     latencies = sorted(
         hb.latencyMs
