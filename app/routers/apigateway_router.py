@@ -1,6 +1,6 @@
 import base64
 import json
-
+import math
 
 from fastapi import APIRouter, HTTPException, status
 
@@ -94,8 +94,8 @@ def _compute_slo(
             hb
             for hb in heartbeats
             if hb.service == slo_query.service
-            and hb.timestamp >= slo_query.since
         ]
+
     if not window:
         return SloOutput(
             availability=0.0,
@@ -116,8 +116,8 @@ def _compute_slo(
         for hb in window
     )
 
-    index = int(0.95 * len(latencies))
-    p95_latency = latencies[index]
+    rank = math.ceil(0.95 * len(latencies))
+    p95_latency = latencies[rank - 1]
 
     return SloOutput(
         availability=availability,
