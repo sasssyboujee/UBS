@@ -10,17 +10,16 @@ EPS = 1e-9
 UNREACHABLE: dict[str, Any] = {"total_duration_sec": None, "arrival_time": None, "path": []}
 
 
-def parse_iso8601(timestamp: str) -> int:
+def parse_iso8601(timestamp: str) -> float:
     timestamp = timestamp.replace("Z", "+00:00")
-    return int(datetime.fromisoformat(timestamp).timestamp())
+    return datetime.fromisoformat(timestamp).timestamp()
 
 
-def format_iso8601(timestamp: int) -> str:
-    return (
-        datetime.fromtimestamp(timestamp, tz=timezone.utc)
-        .isoformat()
-        .replace("+00:00", "Z")
-    )
+def format_iso8601(timestamp: float) -> str:
+    dt = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+    if abs(timestamp - round(timestamp)) < EPS:
+        return dt.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return dt.isoformat().replace("+00:00", "Z")
 
 
 def _solve(req: dict) -> dict:
@@ -47,10 +46,14 @@ def _solve(req: dict) -> dict:
 
     threshold = max_obs_end
 
-    def build_output(duration_int, path):
+    def build_output(duration: float, path: list[str]) -> dict:
+        if abs(duration - round(duration)) < EPS:
+            duration_out: Any = round(duration)
+        else:
+            duration_out = round(duration, 6)
         return {
-            "total_duration_sec": duration_int,
-            "arrival_time": format_iso8601(start_time + duration_int),
+            "total_duration_sec": duration_out,
+            "arrival_time": format_iso8601(start_time + duration_out),
             "path": path,
         }
 
@@ -109,7 +112,7 @@ def _solve(req: dict) -> dict:
         t, _, u = heapq.heappop(heap)
 
         if u == end_coord:
-            duration = round(t - start_time)
+            duration = t - start_time
             path = []
             state = (u, t)
             while state in came_from:
