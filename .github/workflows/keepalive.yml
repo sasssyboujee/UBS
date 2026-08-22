@@ -1,0 +1,26 @@
+# Keep the Render free-tier service awake.
+#
+# Render spins a free web service down after ~15 minutes without traffic and
+# the first request after sleep can take 30-60s to come back. The challenge
+# grader runs a timed multi-turn evaluation, so a cold start can eat entire
+# problem attempts ("No tool or answer could be found", zero recorded calls).
+# Pinging every 10 minutes keeps the service warm without paying for a paid
+# instance type.
+name: keepalive
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping the service
+        run: |
+          for url in \
+            "https://ubs-coding-challenge-api.onrender.com/healthz" \
+            "https://ubs-coding-challenge-api.onrender.com/mcp" ; do
+            curl -fsS --retry 3 --max-time 30 "$url" > /dev/null || echo "ping failed: $url"
+          done
