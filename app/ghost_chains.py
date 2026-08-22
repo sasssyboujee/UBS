@@ -7,20 +7,24 @@ transaction increases the graph's capacity to support recurring flow.
 Structural model
 ----------------
 For an incoming edge u -> v we look at the active graph *before* the edge is
-added and count, over every pair (s, t) where s can already reach u and v can
-already reach t:
+added.  The engine maintains transitive reachability plus all-pairs shortest
+path distances (in edges), so the effect of the edge can be classified
+precisely for every pair (s, t) where s can already reach u and v can already
+reach t:
 
-* ``new``  — pairs that were not connected before (the edge extends reach).
-  The trivial direct pair (u, v) is subtracted, so the very first edge of a
-  graph contributes nothing: a single isolated transfer is boring.
-* ``par``  — pairs that were already connected (the edge adds an alternative
-  route, i.e. convergence / a shortened path).
+* ``new``  — ``t`` was not reachable from ``s`` before: the edge creates a new
+  path.  The trivial direct pair (u, v) is subtracted, so the very first edge
+  of a graph contributes nothing: a single isolated transfer is boring.
+* ``par``  — ``t`` was already reachable from ``s`` and the route through the
+  new edge is no longer than the previous shortest path.  These are genuine
+  alternative/shortened routes (convergence); strictly longer detours are
+  ignored because they add no capacity for recurring flow.
 * ``cycle`` — whether the edge itself closes a loop (v already reached u, or
   u == v).  Only a genuinely new edge can close a loop; a repeated edge does
   not change reachability.
-* ``multi`` — if the edge closes a loop, how many other nodes already sit on a
-  cycle through the destination; two independent return paths are stronger
-  than a single return.
+* ``multi`` — if the edge closes a loop, how many existing return edges already
+  flow back into the destination (two independent return paths are stronger
+  than a single return).
 
 Repeated edges (same u -> v again) create no new reachability but add parallel
 capacity, so they score through ``par``.  Self-loops are cycles.
@@ -81,10 +85,12 @@ from __future__ import annotations
 import heapq
 import json
 import threading
+from collections import deque
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 LOOKBACK = timedelta(hours=24)
+INF = float("inf")
 
 # Score weights for the structural raw signal.
 W_PAR = 2.0      # an alternative route between already-connected nodes
@@ -122,6 +128,8 @@ class GhostChainScorer:
             self.id_to_node: list[str] = []
             self.reach: dict[str, int] = {}
             self.rev: dict[str, int] = {}
+            self.dist: list[list[float]] = []
+            self.in_mask: dict[str, int] = {}
             self._seq = 0
             self.window_end: float | None = None
 
@@ -241,6 +249,11 @@ class GhostChainScorer:
             self.id_to_node.append(node)
             self.reach[node] = 1 << idx
             self.rev[node] = 1 << idx
+            self.in_mask[node] = 0
+            for row in self.dist:
+                row.append(INF)
+            self.dist.append([INF] * (idx + 1))
+            self.dist[idx][idx] = 0.0
         return idx
 
     @staticmethod
@@ -262,6 +275,7 @@ class GhostChainScorer:
 
     def _structural_raw(self, u: str, v: str, *, is_new: bool) -> float:
         u_idx = self.node_ids[u]
+        v_idx = self.node_ids[v]
         srcs = self.rev[u]
         dsts = self.reach[v]
 
@@ -271,17 +285,26 @@ class GhostChainScorer:
             # A self-loop creates no new simple path between distinct entities:
             # it is scored purely as a cycle below.
             for s_idx in self._iter_bits(srcs):
-                s_name = self.id_to_node[s_idx]
-                reach_s = self.reach[s_name]
-                new_pairs += (dsts & ~reach_s).bit_count()
-                par_pairs += (dsts & reach_s & ~(1 << s_idx)).bit_count()
+                d_su = self.dist[s_idx][u_idx]
+                if d_su == INF:
+                    continue
+                d_s = self.dist[s_idx]
+                for t_idx in self._iter_bits(dsts):
+                    d_vt = self.dist[v_idx][t_idx]
+                    if d_vt == INF:
+                        continue
+                    d_new = d_su + 1.0 + d_vt
+                    d_old = d_s[t_idx]
+                    if d_old == INF:
+                        new_pairs += 1
+                    elif d_new <= d_old:
+                        par_pairs += 1
 
         cycle = 0
         multi = 0
         if is_new and (u == v or (self.reach[v] >> u_idx) & 1):
             cycle = 1
-            scc = self.rev[v] & self.reach[v]
-            multi = scc.bit_count() - 1
+            multi = (self.in_mask.get(v, 0) & self.reach[v]).bit_count()
 
         return max(0, new_pairs - 1) + W_PAR * par_pairs + W_CYCLE * cycle + W_MULTI * multi
 
@@ -457,6 +480,9 @@ class GhostChainScorer:
         if not is_first_direct_edge:
             return
 
+        u_idx = self.node_ids[u]
+        v_idx = self.node_ids[v]
+
         # Incremental transitive-closure update for the new edge u -> v.
         rev_u = self.rev[u]
         reach_v = self.reach[v]
@@ -467,8 +493,25 @@ class GhostChainScorer:
             t_name = self.id_to_node[t_idx]
             self.rev[t_name] |= rev_u
 
+        # Incremental all-pairs shortest-path update.  Any new shortest path
+        # uses the inserted edge at most once, so a single pass over the
+        # sources that reach u and the targets reachable from v is exact.
+        for s_idx in self._iter_bits(rev_u):
+            d_su = self.dist[s_idx][u_idx]
+            if d_su == INF:
+                continue
+            d_s = self.dist[s_idx]
+            for t_idx in self._iter_bits(reach_v):
+                d_vt = self.dist[v_idx][t_idx]
+                if d_vt == INF:
+                    continue
+                d_new = d_su + 1.0 + d_vt
+                d_s[t_idx] = min(d_s[t_idx], d_new)
+
+        self.in_mask[v] = self.in_mask.get(v, 0) | (1 << u_idx)
+
     def _rebuild_closure(self) -> None:
-        """Rebuild node ids, transitive closure and weak components."""
+        """Rebuild node ids, transitive closure, distances and weak components."""
         nodes: set[str] = set()
         for u, counts in self.adj.items():
             nodes.add(u)
@@ -478,12 +521,14 @@ class GhostChainScorer:
         self.id_to_node = []
         self.reach = {}
         self.rev = {}
+        self.in_mask = {}
         for name in sorted(nodes):
             idx = len(self.id_to_node)
             self.node_ids[name] = idx
             self.id_to_node.append(name)
             self.reach[name] = 1 << idx
             self.rev[name] = 1 << idx
+            self.in_mask[name] = 0
 
         for u in self.id_to_node:
             for v, count in self.adj.get(u, {}).items():
@@ -498,7 +543,39 @@ class GhostChainScorer:
                     t_name = self.id_to_node[t_idx]
                     self.rev[t_name] |= rev_u
 
+        self._rebuild_distances()
+        self._rebuild_in_mask()
         self._rebuild_components()
+
+    def _rebuild_distances(self) -> None:
+        """Recompute all-pairs shortest distances from the active edge set."""
+        n = len(self.id_to_node)
+        self.dist = [[INF] * n for _ in range(n)]
+        for i in range(n):
+            self.dist[i][i] = 0.0
+
+        for u_idx, u_name in enumerate(self.id_to_node):
+            row = self.dist[u_idx]
+            queue: deque[int] = deque([u_idx])
+            while queue:
+                x_idx = queue.popleft()
+                d_next = row[x_idx] + 1.0
+                for v_name, count in self.adj.get(self.id_to_node[x_idx], {}).items():
+                    if count <= 0:
+                        continue
+                    v_idx = self.node_ids[v_name]
+                    if row[v_idx] == INF:
+                        row[v_idx] = d_next
+                        queue.append(v_idx)
+
+    def _rebuild_in_mask(self) -> None:
+        """Recompute the in-neighbour bitmask of every node."""
+        for u_name, counts in self.adj.items():
+            u_idx = self.node_ids[u_name]
+            bit = 1 << u_idx
+            for v_name, count in counts.items():
+                if count > 0:
+                    self.in_mask[v_name] = self.in_mask.get(v_name, 0) | bit
 
     def _rebuild_components(self) -> None:
         """Rebuild the weak-component union-find from the active edge set."""
