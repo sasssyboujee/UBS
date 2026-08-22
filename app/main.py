@@ -7,6 +7,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from app.mcp_server2 import mcp
+from fastapi.responses import RedirectResponse
 
 from app.mcp_server import handle_rpc, sse_endpoint_stream, sse_response_stream
 from app.models import (
@@ -25,6 +26,11 @@ app = FastAPI(
 )
 for router in routers:
     app.include_router(router)
+
+@app.get("/mcp")
+async def redirect_mcp_root():
+    return RedirectResponse(url="/mcp/sse")
+
 app.mount("/mcp", mcp.sse_app())
 
 # Strict Security: Enforce CORS

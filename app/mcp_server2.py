@@ -13,6 +13,11 @@ mcp = FastMCP("ShowdownToolServer")
 @mcp.tool()
 def recall_passages(query: str) -> list[str]:
     """Retrieves relevant passages from the 5 study material documents.
+    1. The Meridian Trench Research Station
+    2. Ashgrove Metropolitan Transit Authority
+    3. Velmara Compound Phase II Trial Record
+    4. Hollowlight Engine Technical Handbook
+    5. Thornmere Growers Cooperative Yearbook
     Enforces a strict total limit of <= 900 o200k_base tokens.
     """
     materials = [f"{BASE_URL}/study-materials/{i}" for i in range(1, 6)]
