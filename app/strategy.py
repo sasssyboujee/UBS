@@ -933,16 +933,46 @@ def _legalize(resp: MoveResponse, req: MoveRequest, legal: set[str]) -> MoveResp
 
 def choose_action(req: MoveRequest) -> MoveResponse:
     """Pick the bot's next action for a /move request.
-
-    ``table_rule`` is read from every request. Unknown codenames are played
-    with the learned adaptive strategy; observations from ``recent_hands`` are
-    folded into the model first so decisions use the freshest data. When a
-    leg is safely cleared the bot switches to nit mode to lock it in.
+    
+    Experimental strategy:
+    - Phase 2 (codename != "standard"): after threshold, fold all the way; before threshold, go all-in if good card.
+    - Phase 1 (standard): use original logic.
     """
     legal = set(req.legal_actions or [])
     _record_recent_hands(req)
 
     codename = req.table_rule or "standard"
+    
+    if codename != "standard":
+        delta = _our_chip_delta(req)
+        if delta >= LOCKDOWN_MIN_DELTA:
+            # After threshold: just nit play fold all the way
+            if (req.to_call or 0) == 0:
+                resp = MoveResponse(action="check")
+            else:
+                resp = MoveResponse(action="fold")
+        else:
+            # Before threshold: if good card, all in; else fold
+            card = req.your_number or 1
+            if req.round == "pre_reveal":
+                is_good = _equity_pre(card, codename) >= 0.65
+            else:
+                comm = req.community_number or 1
+                is_good = _equity_post(card, comm, codename) >= 0.70
+                
+            if is_good:
+                if "raise" in legal and req.max_raise_to is not None:
+                    resp = MoveResponse(action="raise", amount=req.max_raise_to)
+                elif "bet" in legal and req.max_raise_to is not None:
+                    resp = MoveResponse(action="bet", amount=req.max_raise_to)
+                else:
+                    resp = MoveResponse(action="call")
+            else:
+                if (req.to_call or 0) == 0:
+                    resp = MoveResponse(action="check")
+                else:
+                    resp = MoveResponse(action="fold")
+        return _legalize(resp, req, legal)
 
     tier = _lockdown_tier(req)
     if tier == 2:

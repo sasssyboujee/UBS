@@ -572,3 +572,137 @@ def test_repeated_edge_with_new_identity_counts_identity_signal():
     ])
     # Repeated structural edge but with a shifted device identity.
     assert results[2]["riskScore"] > 0.0
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 - value signal
+# ---------------------------------------------------------------------------
+
+
+def test_phase3_consistent_decay_is_lowest_of_value_examples():
+    reset()
+    ex1 = post_transactions([
+        make_tx("t1", "m", "a", timestamp(0), amount=10000),
+        make_tx("t2", "a", "c", timestamp(1), amount=9910),
+        make_tx("t3", "c", "h", timestamp(2), amount=9820.81),
+        make_tx("t4", "h", "n", timestamp(3), amount=9732.42),
+    ])
+    reset()
+    ex2 = post_transactions([
+        make_tx("t1", "m", "a", timestamp(0), amount=10000),
+        make_tx("t2", "a", "c", timestamp(1), amount=9800),
+        make_tx("t3", "a", "s", timestamp(2), amount=5000),
+        make_tx("t4", "c", "h", timestamp(3), amount=9700),
+        make_tx("t5", "s", "o", timestamp(4), amount=4900),
+    ])
+    reset()
+    ex4 = post_transactions([
+        make_tx("t1", "m", "a", timestamp(0), amount=10000),
+        make_tx("t2", "a", "c", timestamp(1), amount=9800),
+        make_tx("t3", "a", "s", timestamp(2), amount=5000),
+        make_tx("t4", "c", "h", timestamp(3), amount=9700),
+        make_tx("t5", "s", "h", timestamp(4), amount=4950),
+    ])
+    # Consistent value decay along a single path is the characteristic
+    # layering pattern and must be the lowest of the four examples.
+    assert ex1[-1]["riskScore"] < ex2[-1]["riskScore"]
+    assert ex1[-1]["riskScore"] < ex4[-1]["riskScore"]
+
+
+def test_phase3_value_reversal_is_highest_of_value_examples():
+    reset()
+    ex1 = post_transactions([
+        make_tx("t1", "m", "a", timestamp(0), amount=10000),
+        make_tx("t2", "a", "c", timestamp(1), amount=9910),
+        make_tx("t3", "c", "h", timestamp(2), amount=9820.81),
+        make_tx("t4", "h", "n", timestamp(3), amount=9732.42),
+    ])
+    reset()
+    ex2 = post_transactions([
+        make_tx("t1", "m", "a", timestamp(0), amount=10000),
+        make_tx("t2", "a", "c", timestamp(1), amount=9800),
+        make_tx("t3", "a", "s", timestamp(2), amount=5000),
+        make_tx("t4", "c", "h", timestamp(3), amount=9700),
+        make_tx("t5", "s", "o", timestamp(4), amount=4900),
+    ])
+    reset()
+    ex3 = post_transactions([
+        make_tx("t1", "m", "a", timestamp(0), amount=10000),
+        make_tx("t2", "a", "c", timestamp(1), amount=9950),
+        make_tx("t3", "c", "h", timestamp(2), amount=9800),
+        make_tx("t4", "h", "n", timestamp(3), amount=9950),
+    ])
+    reset()
+    ex4 = post_transactions([
+        make_tx("t1", "m", "a", timestamp(0), amount=10000),
+        make_tx("t2", "a", "c", timestamp(1), amount=9800),
+        make_tx("t3", "a", "s", timestamp(2), amount=5000),
+        make_tx("t4", "c", "h", timestamp(3), amount=9700),
+        make_tx("t5", "s", "h", timestamp(4), amount=4950),
+    ])
+    # The value trajectory reversal must be the highest of the four.
+    assert ex3[-1]["riskScore"] > ex1[-1]["riskScore"]
+    assert ex3[-1]["riskScore"] > ex2[-1]["riskScore"]
+    assert ex3[-1]["riskScore"] > ex4[-1]["riskScore"]
+
+
+def test_phase3_reversal_on_return_path_boosts_score():
+    reset()
+    plain_return = post_transactions([
+        make_tx("t1", "m", "a", timestamp(0), amount=10000),
+        make_tx("t2", "a", "c", timestamp(1), amount=9800),
+        make_tx("t3", "c", "h", timestamp(2), amount=9700),
+        make_tx("t4", "h", "a", timestamp(3), amount=9600),
+    ])
+    reset()
+    reversal_return = post_transactions([
+        make_tx("t1", "m", "a", timestamp(0), amount=10000),
+        make_tx("t2", "a", "c", timestamp(1), amount=9800),
+        make_tx("t3", "c", "h", timestamp(2), amount=9700),
+        make_tx("t4", "h", "a", timestamp(3), amount=9850),
+    ])
+    # Same return structure, but the returning amount exceeds the prior leg.
+    assert reversal_return[-1]["riskScore"] > plain_return[-1]["riskScore"]
+
+
+def test_value_signal_does_not_blindly_aggregate_branches():
+    reset()
+    results = post_transactions([
+        make_tx("t1", "x", "h", timestamp(0), amount=500),
+        make_tx("t2", "y", "h", timestamp(1), amount=500),
+        make_tx("t3", "h", "n", timestamp(2), amount=600),
+    ])
+    reset()
+    same_structure = post_transactions([
+        make_tx("t1", "x", "h", timestamp(0), amount=5),
+        make_tx("t2", "y", "h", timestamp(1), amount=5),
+        make_tx("t3", "h", "n", timestamp(2), amount=1),
+    ])
+    # At a merge point the flow is ambiguous, so amounts from unrelated
+    # branches are never aggregated: both score as a plain structural
+    # extension regardless of the amounts.
+    assert results[2]["riskScore"] > 0.0
+    assert results[2]["riskScore"] == same_structure[2]["riskScore"]
+
+
+def test_value_signal_without_incoming_context_is_neutral():
+    reset()
+    results = post_transactions([
+        make_tx("t1", "a", "b", timestamp(0), amount=999999),
+    ])
+    # A lone huge transfer has no structural or value context.
+    assert results[0]["riskScore"] == 0.0
+
+
+def test_value_state_expires_with_the_lookback_window():
+    reset()
+    post_transactions([
+        make_tx("t1", "m", "a", timestamp(0), amount=10000),
+        make_tx("t2", "a", "c", timestamp(1), amount=9900),
+    ])
+    # 24h + 2m later both earlier edges are older than 24h, so the reversal
+    # context is gone and the incoming edge scores as an isolated first edge.
+    results = post_transactions([
+        make_tx("t3", "c", "h", timestamp(24 * 60 + 2), amount=10100),
+    ])
+    assert results[0]["riskScore"] == 0.0

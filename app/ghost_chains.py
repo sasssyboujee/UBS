@@ -61,6 +61,21 @@ mapped to [0, 1] with the same saturation curve, so scores stay comparable
 within a running system and the structural ordering is unchanged when no
 identity fields are present.
 
+Value model (Phase 3)
+---------------------
+``amount`` forms a value signal inside structurally inferred flow segments.
+For an incoming edge u -> v the engine traces the unique incoming-edge chain
+backwards from ``u``, stopping at sources and merge points so unrelated
+branches are never aggregated.  Adjacent amounts in the segment are compared:
+
+* ``reversal`` — a leg whose amount exceeds the previous leg (retention ratio
+  above 1.0).  A value trajectory reversal against structural continuity is a
+  direct contradiction.
+* ``divergence`` — widely varying retention ratios across the segment, i.e.
+  competing flow hypotheses (a sharp split next to a gentle decay).
+* consistent decay contributes nothing: it is the characteristic layering
+  pattern, not a deviation from it.
+
 Temporal model
 --------------
 Only transactions whose ``createdAt`` lies inside the most recent 24 hours are
@@ -103,6 +118,11 @@ W_DROP = 2.0     # a consistent flow stops carrying its identity
 W_REUSE = 1.0    # per disconnected component that already carries the value
 W_AGREE = 1.5    # identity lines up with the structural flow (scaled by it)
 
+# Score weights for the value raw signal (Phase 3).
+W_REV = 5.0          # amount trajectory reversal along a structural flow
+W_DIV = 1.5          # divergent / inconsistent decay ratios inside a flow segment
+DIV_THRESHOLD = 1.3  # max/min retention-ratio spread that counts as divergence
+
 SATURATION = 10.0  # risk = raw / (raw + SATURATION)
 
 
@@ -123,7 +143,7 @@ class GhostChainScorer:
             self.adj: dict[str, dict[str, int]] = {}
             self.in_deg: dict[str, int] = {}
             self.out_deg: dict[str, int] = {}
-            self.edge_heap: list[tuple[float, int, str, str, str, str | None, str | None]] = []
+            self.edge_heap: list[tuple[float, int, str, str, str, str | None, str | None, float]] = []
             self.node_ids: dict[str, int] = {}
             self.id_to_node: list[str] = []
             self.reach: dict[str, int] = {}
@@ -142,6 +162,12 @@ class GhostChainScorer:
             self.incoming_ip: dict[str, dict[str, int]] = {}
             self.device_edge_counts: dict[str, dict[tuple[str, str], int]] = {}
             self.incoming_device: dict[str, dict[str, int]] = {}
+
+            # Value indexes (Phase 3).  ``incoming_amounts[v][u]`` is the FIFO
+            # queue of amounts for active u -> v edges (oldest first), used to
+            # trace structurally inferred flow segments without aggregating
+            # across unrelated branches.
+            self.incoming_amounts: dict[str, dict[str, deque[float]]] = {}
 
             # Union-find over weakly connected components of the active graph.
             self.weak_parent: dict[str, str] = {}
@@ -207,13 +233,14 @@ class GhostChainScorer:
 
         ip = self._norm_identity(getattr(tx, "ipAddress", None))
         device = self._norm_identity(getattr(tx, "deviceId", None))
+        amount = float(tx.amount)
 
         cutoff = self.window_end - LOOKBACK.total_seconds()
         self._expire_before(cutoff)
 
-        risk = self._score_edge(tx.fromUserId, tx.toUserId, ip, device)
+        risk = self._score_edge(tx.fromUserId, tx.toUserId, amount, ip, device)
         if timestamp >= cutoff:
-            self._apply_edge(tx.fromUserId, tx.toUserId, timestamp, tx.txId, ip, device)
+            self._apply_edge(tx.fromUserId, tx.toUserId, timestamp, tx.txId, ip, device, amount)
         self.seen[tx.txId] = (risk, signature)
         return tx.txId, risk
 
@@ -221,10 +248,11 @@ class GhostChainScorer:
         """Drop edges with createdAt strictly before the 24h cutoff."""
         removed = False
         while self.edge_heap and self.edge_heap[0][0] < cutoff:
-            _, _, u, v, _, ip, device = heapq.heappop(self.edge_heap)
+            _, _, u, v, _, ip, device, _amount = heapq.heappop(self.edge_heap)
             removed = True
             self._dec_identity(self.ip_edge_counts, self.incoming_ip, u, v, ip)
             self._dec_identity(self.device_edge_counts, self.incoming_device, u, v, device)
+            self._dec_amount(u, v)
 
             counts = self.adj.get(u)
             if not counts:
@@ -263,14 +291,15 @@ class GhostChainScorer:
             yield lsb.bit_length() - 1
             bits ^= lsb
 
-    def _score_edge(self, u: str, v: str, ip: str | None, device: str | None) -> float:
+    def _score_edge(self, u: str, v: str, amount: float, ip: str | None, device: str | None) -> float:
         self._node_index(u)
         self._node_index(v)
 
         edge_count = self.adj.get(u, {}).get(v, 0)
         structural = self._structural_raw(u, v, is_new=edge_count == 0)
         identity = self._identity_raw(u, v, ip, device, structural)
-        raw = structural + identity
+        value = self._value_raw(u, v, amount)
+        raw = structural + identity + value
         return raw / (raw + SATURATION)
 
     def _structural_raw(self, u: str, v: str, *, is_new: bool) -> float:
@@ -307,6 +336,67 @@ class GhostChainScorer:
             multi = (self.in_mask.get(v, 0) & self.reach[v]).bit_count()
 
         return max(0, new_pairs - 1) + W_PAR * par_pairs + W_CYCLE * cycle + W_MULTI * multi
+
+    # ------------------------------------------------------------------
+    # Value signal (Phase 3)
+    # ------------------------------------------------------------------
+    def _value_raw(self, u: str, v: str, amount: float) -> float:
+        """Score the amount trajectory inside the structural flow into u.
+
+        The flow segment is traced backwards from ``u`` while every node has
+        exactly one active incoming edge.  Tracing stops at sources and at
+        merge points, so amounts from unrelated branches are never aggregated.
+        A retention ratio above 1.0 (an amount that exceeds the preceding leg)
+        is a trajectory reversal; widely varying retention ratios across the
+        segment are a divergence signal.
+        """
+        amounts: list[float] = [amount]
+        cur = u
+        seen: set[str] = set()
+        while cur not in seen and len(amounts) < 64:
+            seen.add(cur)
+            incoming = self.incoming_amounts.get(cur)
+            if not incoming or len(incoming) != 1:
+                break
+            (_src, queue) = next(iter(incoming.items()))
+            if not queue:
+                break
+            amounts.append(queue[-1])
+            cur = _src
+
+        if len(amounts) < 2:
+            return 0.0
+
+        ratios: list[float] = []
+        for i in range(len(amounts) - 1):
+            denom = amounts[i + 1]
+            if denom > 0:
+                ratios.append(amounts[i] / denom)
+        if not ratios:
+            return 0.0
+
+        raw = 0.0
+        if any(r > 1.0 + 1e-9 for r in ratios):
+            raw += W_REV
+        elif len(ratios) >= 2:
+            spread = max(ratios) / min(ratios)
+            if spread > DIV_THRESHOLD:
+                raw += W_DIV
+        return raw
+
+    def _dec_amount(self, u: str, v: str) -> None:
+        """Remove the oldest u -> v amount after that edge expires."""
+        by_source = self.incoming_amounts.get(v)
+        if by_source is None:
+            return
+        queue = by_source.get(u)
+        if not queue:
+            return
+        queue.popleft()
+        if not queue:
+            by_source.pop(u, None)
+            if not by_source:
+                self.incoming_amounts.pop(v, None)
 
     # ------------------------------------------------------------------
     # Identity signal (Phase 2)
@@ -460,6 +550,7 @@ class GhostChainScorer:
         tx_id: str,
         ip: str | None,
         device: str | None,
+        amount: float,
     ) -> None:
         self._node_index(u)
         self._node_index(v)
@@ -471,7 +562,8 @@ class GhostChainScorer:
         self.in_deg[v] = self.in_deg.get(v, 0) + 1
 
         self._seq += 1
-        heapq.heappush(self.edge_heap, (timestamp, self._seq, u, v, tx_id, ip, device))
+        heapq.heappush(self.edge_heap, (timestamp, self._seq, u, v, tx_id, ip, device, amount))
+        self.incoming_amounts.setdefault(v, {}).setdefault(u, deque()).append(amount)
 
         self._uf_union(u, v)
         self._inc_identity(self.ip_edge_counts, self.incoming_ip, u, v, ip)

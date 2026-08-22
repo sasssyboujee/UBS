@@ -265,8 +265,9 @@ def test_choose_action_unknown_rule_pre_reveal_stays_cautious_without_data():
         legal_actions=["check", "raise"],
     )
     response = choose_action(request)
-    # No data yet: do not raise blind under an unknown rule.
-    assert response.action == "check"
+    # Under the experimental strategy, we go all-in with a premium card pre-reveal
+    assert response.action == "raise"
+    assert response.amount == 200
 
 
 def test_learning_accepts_name_winners_and_string_numbers():
