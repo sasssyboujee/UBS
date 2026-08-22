@@ -120,8 +120,8 @@ W_AGREE = 1.5    # identity lines up with the structural flow (scaled by it)
 
 # Score weights for the value raw signal (Phase 3).
 W_REV = 5.0          # amount trajectory reversal along a structural flow
-W_DIV = 1.5          # divergent / inconsistent decay ratios inside a flow segment
-DIV_THRESHOLD = 1.3  # max/min retention-ratio spread that counts as divergence
+W_DIV = 1.5          # competing flow hypotheses (split legs of very different size)
+SPLIT_RATIO = 1.5    # largest/smallest outgoing-leg ratio that counts as a split
 
 SATURATION = 10.0  # risk = raw / (raw + SATURATION)
 
@@ -347,10 +347,11 @@ class GhostChainScorer:
         exactly one active incoming edge.  Tracing stops at sources and at
         merge points, so amounts from unrelated branches are never aggregated.
         A retention ratio above 1.0 (an amount that exceeds the preceding leg)
-        is a trajectory reversal; widely varying retention ratios across the
-        segment are a divergence signal.
+        is a trajectory reversal; a split inside the segment (a node with
+        several outgoing legs of very different sizes) is a divergence signal.
         """
         amounts: list[float] = [amount]
+        segment_nodes: list[str] = [u]
         cur = u
         seen: set[str] = set()
         while cur not in seen and len(amounts) < 64:
@@ -363,6 +364,7 @@ class GhostChainScorer:
                 break
             amounts.append(queue[-1])
             cur = _src
+            segment_nodes.append(cur)
 
         if len(amounts) < 2:
             return 0.0
@@ -378,11 +380,26 @@ class GhostChainScorer:
         raw = 0.0
         if any(r > 1.0 + 1e-9 for r in ratios):
             raw += W_REV
-        elif len(ratios) >= 2:
-            spread = max(ratios) / min(ratios)
-            if spread > DIV_THRESHOLD:
-                raw += W_DIV
+        if any(self._has_value_split(node) for node in segment_nodes):
+            raw += W_DIV
         return raw
+
+    def _has_value_split(self, node: str) -> bool:
+        """True when a node has several outgoing legs of very different sizes."""
+        targets = self.adj.get(node, {})
+        if len(targets) < 2:
+            return False
+        amounts: list[float] = []
+        for target in targets:
+            queue = self.incoming_amounts.get(target, {}).get(node)
+            if queue:
+                amounts.append(queue[-1])
+        if len(amounts) < 2:
+            return False
+        smallest = min(amounts)
+        if smallest <= 0:
+            return False
+        return max(amounts) > smallest * SPLIT_RATIO
 
     def _dec_amount(self, u: str, v: str) -> None:
         """Remove the oldest u -> v amount after that edge expires."""
