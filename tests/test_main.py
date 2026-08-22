@@ -1,3 +1,6 @@
+import base64
+import json
+
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -40,6 +43,66 @@ def test_solve_challenge_valid():
             "priority": 3
         }
     }
+
+
+def solve_inner_payload():
+    return {
+        "adaptInput": {
+            "user": {"id": "U7", "fullName": "John Smith"},
+            "action": "UPDATE",
+            "metadata": {"priority": "MEDIUM"},
+        }
+    }
+
+
+def test_solve_unpadded_base64():
+    encoded = base64.b64encode(json.dumps(solve_inner_payload()).encode()).decode().rstrip("=")
+    response = client.post("/solve", json={"payload": encoded})
+    assert response.status_code == 200
+    assert response.json() == {
+        "adaptOutput": {
+            "id": "U7",
+            "name": "John Smith",
+            "action": "update",
+            "priority": 2,
+        }
+    }
+
+
+def test_solve_urlsafe_base64():
+    encoded = base64.urlsafe_b64encode(json.dumps(solve_inner_payload()).encode()).decode()
+    response = client.post("/solve", json={"payload": encoded})
+    assert response.status_code == 200
+    assert response.json()["adaptOutput"]["priority"] == 2
+
+
+def test_solve_raw_json_fallback():
+    raw = json.dumps(solve_inner_payload())
+    response = client.post("/solve", json={"payload": raw})
+    assert response.status_code == 200
+    assert response.json()["adaptOutput"]["name"] == "John Smith"
+
+
+def test_solve_low_priority_and_mixed_case_action():
+    inner = solve_inner_payload()
+    inner["adaptInput"]["action"] = "DeLeTe"
+    inner["adaptInput"]["metadata"]["priority"] = "low"
+    encoded = base64.b64encode(json.dumps(inner).encode()).decode()
+    response = client.post("/solve", json={"payload": encoded})
+    assert response.status_code == 200
+    assert response.json() == {
+        "adaptOutput": {
+            "id": "U7",
+            "name": "John Smith",
+            "action": "delete",
+            "priority": 1,
+        }
+    }
+
+
+def test_solve_invalid_payload_returns_400():
+    response = client.post("/solve", json={"payload": "not-a-valid-payload!!"})
+    assert response.status_code == 400
 
 
 def make_move_payload(**overrides):

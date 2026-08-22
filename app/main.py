@@ -94,12 +94,37 @@ async def say_hello(request: HelloRequest):
         )
     return HelloResponse(greeting=f"Hello, {request.name}!")
 
+def _decode_payload(raw: str) -> dict:
+    """Decode the challenge payload: base64 (standard or URL-safe) or raw JSON."""
+    text = raw.strip()
+    candidates = [text]
+    if len(text) % 4:
+        candidates.append(text + "=" * (4 - len(text) % 4))
+
+    for candidate in candidates:
+        for decoder in (base64.b64decode, base64.urlsafe_b64decode):
+            try:
+                decoded = json.loads(decoder(candidate).decode("utf-8"))
+                if isinstance(decoded, dict):
+                    return decoded
+            except ValueError:
+                continue
+
+    # Fallback: the payload may already be plain JSON.
+    try:
+        decoded = json.loads(text)
+        if isinstance(decoded, dict):
+            return decoded
+    except ValueError:
+        pass
+
+    raise ValueError("payload is not valid base64-encoded JSON")
+
+
 @app.post("/solve", response_model=SolveResponse)
 async def solve_challenge(request: SolveRequest):
     try:
-        decoded_bytes = base64.b64decode(request.payload)
-        decoded_str = decoded_bytes.decode('utf-8')
-        data = json.loads(decoded_str)
+        data = _decode_payload(request.payload)
     except ValueError:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
