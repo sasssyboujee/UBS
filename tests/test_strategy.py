@@ -1,6 +1,7 @@
-from app.models import HandResult, MoveRequest
+from app.models import HandResult, MoveRequest, PlayerState
 from app.strategy import (
     _codename_observations,
+    _live_opponents,
     _post_reveal_opp_weights,
     _post_reveal_opp_weights_observed,
     _record_recent_hands,
@@ -361,3 +362,100 @@ def test_opponent_range_learned_from_showdowns():
     observed = _post_reveal_opp_weights_observed(7, raised=False)
     standard = _post_reveal_opp_weights(7, raised=False, codename="standard")
     assert observed[4] > standard[4]
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: six-seat multiway
+# ---------------------------------------------------------------------------
+
+
+def make_phase3_request(**overrides):
+    """Build a six-seat phase-3 /move request with sensible defaults."""
+    players = [
+        PlayerState(seat=i, name=name, stack=200)
+        for i, name in enumerate(["you", "Dana", "Miles", "Theo", "Rhea", "Bram"])
+    ]
+    payload = {
+        "phase": 3,
+        "match_id": "p3-match",
+        "table_rule": "standard",
+        "round": "pre_reveal",
+        "your_number": 13,
+        "your_seat": 0,
+        "button_seat": 1,
+        "your_stack": 200,
+        "to_call": 0,
+        "pot": 3,
+        "min_raise_to": 4,
+        "max_raise_to": 200,
+        "legal_actions": ["check", "raise"],
+        "players": players,
+    }
+    payload.update(overrides)
+    return MoveRequest(**payload)
+
+
+def test_phase3_pre_reveal_shoves_best_card():
+    request = make_phase3_request(your_number=13)
+    response = choose_action(request)
+    assert response.action == "raise"
+    assert response.amount == 200
+
+
+def test_phase3_pre_reveal_checks_mid_card():
+    request = make_phase3_request(your_number=7)
+    response = choose_action(request)
+    assert response.action == "check"
+
+
+def test_phase3_post_reveal_pair_jams():
+    request = make_phase3_request(
+        round="post_reveal",
+        your_number=7,
+        community_number=7,
+        to_call=10,
+        pot=20,
+        legal_actions=["fold", "call", "raise"],
+    )
+    response = choose_action(request)
+    assert response.action == "raise"
+    assert response.amount == 200
+
+
+def test_phase3_post_reveal_weak_folds_to_bet():
+    request = make_phase3_request(
+        round="post_reveal",
+        your_number=3,
+        community_number=10,
+        to_call=15,
+        pot=30,
+        legal_actions=["fold", "call", "raise"],
+    )
+    response = choose_action(request)
+    assert response.action == "fold"
+
+
+def test_phase3_folded_and_busted_are_ignored():
+    players = [
+        PlayerState(seat=0, name="you", stack=200),
+        PlayerState(seat=1, name="Dana", stack=200),
+        PlayerState(seat=2, name="Miles", stack=200, folded=True),
+        PlayerState(seat=3, name="Theo", stack=0, busted=True),
+        PlayerState(seat=4, name="Rhea", stack=200),
+        PlayerState(seat=5, name="Bram", stack=200),
+    ]
+    request = make_phase3_request(your_number=7, players=players)
+    assert _live_opponents(request) == 3
+
+
+def test_phase3_unknown_rule_stays_cautious():
+    _reset_learning()
+    request = make_phase3_request(
+        table_rule="mystery",
+        your_number=13,
+        to_call=10,
+        pot=30,
+        legal_actions=["fold", "call", "raise"],
+    )
+    response = choose_action(request)
+    assert response.action == "fold"

@@ -6,7 +6,7 @@ import pytest
 
 from app import toolbox
 from app.toolbox import (
-    RECALL_TOKEN_BUDGET,
+    TOKEN_BUDGET,
     ToolboxError,
     build_graph_url,
     count_tokens,
@@ -76,7 +76,7 @@ def test_recall_returns_small_corpus_verbatim():
     chunks = recall(question, materials)
     assert isinstance(chunks, list)
     assert chunks
-    assert total_tokens(chunks) <= RECALL_TOKEN_BUDGET
+    assert total_tokens(chunks) <= TOKEN_BUDGET
     assert any("14 March" in chunk for chunk in chunks)
 
 
@@ -88,7 +88,7 @@ def test_recall_respects_token_budget_on_large_corpus():
     chunks = recall(question, materials)
     assert isinstance(chunks, list)
     assert chunks
-    assert total_tokens(chunks) <= RECALL_TOKEN_BUDGET
+    assert total_tokens(chunks) <= TOKEN_BUDGET
     assert any("14 March" in chunk for chunk in chunks)
 
 

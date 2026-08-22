@@ -118,7 +118,7 @@ def _resolve_materials(materials: Any) -> list[dict[str, str]]:
         stripped = materials.strip()
         # Accept a raw JSON blob (e.g. the exact {"documents": [...]} shape)
         # passed back as a string, not just a URL.
-        if stripped.startswith("{") or stripped.startswith("["):
+        if stripped.startswith(("{", "[")):
             try:
                 parsed = json.loads(stripped)
             except ValueError:
@@ -126,7 +126,7 @@ def _resolve_materials(materials: Any) -> list[dict[str, str]]:
             if parsed is not None:
                 return _resolve_materials(parsed)
 
-        if stripped.startswith("http://") or stripped.startswith("https://"):
+        if stripped.startswith(("http://", "https://")):
             try:
                 resp = httpx.get(stripped, timeout=_PER_DOC_TIMEOUT)
                 resp.raise_for_status()
@@ -265,7 +265,7 @@ def recall(question: Any, materials: Any = None) -> list[str]:
 # ---------------------------------------------------------------------------
 
 def _fetch_graph(map_id: str, base_url: str | None) -> dict[str, Any]:
-    if map_id.startswith("http://") or map_id.startswith("https://"):
+    if map_id.startswith(("http://", "https://")):
         url = map_id
     else:
         host = (base_url or os.environ.get("GRAPH_BASE_URL") or _DEFAULT_GRAPH_HOST).rstrip("/")
@@ -322,7 +322,7 @@ def _dijkstra_next(adjacency: dict, tolls: dict, start: str, dest: str, forbidde
 def _bounded_next(
     adjacency: dict, tolls: dict, start: str, dest: str, max_hops: int, forbidden: set[str]
 ) -> str | None:
-    reach: list[dict[str, tuple[float, str | None]]] = [dict() for _ in range(max_hops + 1)]
+    reach: list[dict[str, tuple[float, str | None]]] = [{} for _ in range(max_hops + 1)]
     reach[0][start] = (0.0, None)
 
     for h in range(1, max_hops + 1):

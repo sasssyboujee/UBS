@@ -947,6 +947,7 @@ def _lockdown_nit_move(
 
 _P3_MIN_OBS = 10
 _P3_MONSTER = 0.85
+_P3_TOP_MARGIN = 0.03
 _P3_STEAL = 0.74
 _P3_STEAL_MAX_BEHIND = 2
 
@@ -1053,7 +1054,11 @@ def _phase3_move(req: MoveRequest, legal: set[str], codename: str) -> MoveRespon
             return MoveResponse(action="check" if to_call == 0 else "fold")
         s1 = _equity_post(card, comm, codename)
         steal_ok = False
-        monster = s1 >= _P3_MONSTER
+        # Only jam the near-nuts for this community: the learned model inflates
+        # strong-but-not-nut hands, so require our equity to be within a small
+        # margin of the best possible hand.
+        best_s1 = max(_equity_post(c, comm, codename) for c in range(1, 14))
+        monster = s1 >= _P3_MONSTER and s1 >= best_s1 - _P3_TOP_MARGIN
 
     if not learned:
         # Exploration: keep pots tiny and reach showdown cheaply to learn the

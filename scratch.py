@@ -1,5 +1,4 @@
 from app.toolbox import recall
-import json
 
 questions = {
     "When was the sensor grid last brought back into alignment?": "14 March",
