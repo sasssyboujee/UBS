@@ -148,28 +148,52 @@ def solve_case(case: dict[str, Any]) -> dict[str, Any]:
 def _solve_case(case: dict[str, Any]) -> dict[str, Any]:
     wall_start = _time.monotonic()
 
-    start_coord = (int(case["start_coordinate"][0]), int(case["start_coordinate"][1]))
-    end_coord = (int(case["end_coordinate"][0]), int(case["end_coordinate"][1]))
+    start_coord = (
+        int(case["start_coordinate"][0]),
+        int(case["start_coordinate"][1]),
+    )
+    end_coord = (
+        int(case["end_coordinate"][0]),
+        int(case["end_coordinate"][1]),
+    )
     t0 = parse_time(case["start_time"])
 
+    # ------------------------------------------------------------
+    # Build coordinate -> node index
+    # ------------------------------------------------------------
+
     coord_to_idx: dict[tuple[int, int], int] = {}
+
     for node in case.get("nodes", []):
         coord = (int(node[0]), int(node[1]))
         if coord not in coord_to_idx:
             coord_to_idx[coord] = len(coord_to_idx)
+
     for coord in (start_coord, end_coord):
         if coord not in coord_to_idx:
             coord_to_idx[coord] = len(coord_to_idx)
+
     n_nodes = len(coord_to_idx)
 
-    # Directed arcs: [u, v, edge_id, base_duration]
+    # ------------------------------------------------------------
+    # Build bidirectional arcs
+    #
+    # arc = (u, v, edge_id, duration)
+    # ------------------------------------------------------------
+
     arcs: list[tuple[int, int, str, float]] = []
     arcs_by_node: list[list[int]] = [[] for _ in range(n_nodes)]
+
     arc_map: dict[tuple[str, int, int], int] = {}
 
     for edge in case.get("edges", []):
-        u = coord_to_idx[(int(edge["node1"][0]), int(edge["node1"][1]))]
-        v = coord_to_idx[(int(edge["node2"][0]), int(edge["node2"][1]))]
+        u = coord_to_idx[
+            (int(edge["node1"][0]), int(edge["node1"][1]))
+        ]
+        v = coord_to_idx[
+            (int(edge["node2"][0]), int(edge["node2"][1]))
+        ]
+
         edge_id = edge["edge_id"]
         duration = float(edge["base_duration_sec"])
 
@@ -183,17 +207,40 @@ def _solve_case(case: dict[str, Any]) -> dict[str, Any]:
         arcs_by_node[v].append(idx)
         arc_map[(edge_id, v, u)] = idx
 
-    windows: list[list[tuple[float, float, float]]] = [[] for _ in range(len(arcs))]
+    # ------------------------------------------------------------
+    # Build obstruction timelines
+    # ------------------------------------------------------------
+
+    windows: list[list[tuple[float, float, float]]] = [
+        [] for _ in arcs
+    ]
+
     for obstruction in case.get("obstructions", []):
-        from_coord = tuple(obstruction["edge"]["from"])
-        to_coord = tuple(obstruction["edge"]["to"])
-        from_idx = coord_to_idx.get((int(from_coord[0]), int(from_coord[1])))
-        to_idx = coord_to_idx.get((int(to_coord[0]), int(to_coord[1])))
+        from_coord = (
+            int(obstruction["edge"]["from"][0]),
+            int(obstruction["edge"]["from"][1]),
+        )
+        to_coord = (
+            int(obstruction["edge"]["to"][0]),
+            int(obstruction["edge"]["to"][1]),
+        )
+
+        from_idx = coord_to_idx.get(from_coord)
+        to_idx = coord_to_idx.get(to_coord)
+
         if from_idx is None or to_idx is None:
             continue
-        key = (obstruction["edge_id"], from_idx, to_idx)
-        if key in arc_map:
-            windows[arc_map[key]].append(
+
+        key = (
+            obstruction["edge_id"],
+            from_idx,
+            to_idx,
+        )
+
+        arc_idx = arc_map.get(key)
+
+        if arc_idx is not None:
+            windows[arc_idx].append(
                 (
                     parse_time(obstruction["start_time"]),
                     parse_time(obstruction["end_time"]),
@@ -204,14 +251,21 @@ def _solve_case(case: dict[str, Any]) -> dict[str, Any]:
     seg_starts: list[list[float]] = []
     seg_ends: list[list[float]] = []
     seg_factors: list[list[float]] = []
+
     for arc_windows in windows:
-        starts, ends, factors = build_segments(sorted(arc_windows))
+        starts, ends, factors = build_segments(
+            sorted(arc_windows)
+        )
         seg_starts.append(starts)
         seg_ends.append(ends)
         seg_factors.append(factors)
 
     start_idx = coord_to_idx[start_coord]
     end_idx = coord_to_idx[end_coord]
+
+    # ------------------------------------------------------------
+    # Trivial case
+    # ------------------------------------------------------------
 
     if start_idx == end_idx:
         return {
@@ -220,159 +274,372 @@ def _solve_case(case: dict[str, Any]) -> dict[str, Any]:
             "path": [],
         }
 
-    # Quick structural connectivity check (ignoring obstructions).
+    # ------------------------------------------------------------
+    # Structural connectivity
+    # ------------------------------------------------------------
+
     reachable = [False] * n_nodes
     reachable[start_idx] = True
-    q = [start_idx]
+
+    queue = [start_idx]
     qi = 0
-    while qi < len(q):
-        node = q[qi]; qi += 1
-        for arc in arcs_by_node[node]:
-            v = arcs[arc][1]
+
+    while qi < len(queue):
+        u = queue[qi]
+        qi += 1
+
+        for arc_idx in arcs_by_node[u]:
+            v = arcs[arc_idx][1]
+
             if not reachable[v]:
                 reachable[v] = True
-                q.append(v)
+                queue.append(v)
+
     if not reachable[end_idx]:
         return UNREACHABLE
 
-    # Compute a time horizon: the latest obstruction end time.
-    # After all obstructions expire, every edge is at factor 1.0, so a
-    # simple BFS-optimal path always exists.  Any valid answer must arrive
-    # before horizon + total_edge_durations * 2.
+    # ------------------------------------------------------------
+    # Latest obstruction end.
+    #
+    # After this timestamp, every edge is at normal speed forever.
+    # ------------------------------------------------------------
+
     max_obs_end = t0
-    total_dur = 0.0
+
     for arc_windows in windows:
-        for _, e, _ in arc_windows:
-            if e > max_obs_end:
-                max_obs_end = e
-    for _, _, _, d in arcs:
-        total_dur += d
-    # Allow generous headroom but still bounded
-    time_horizon = max_obs_end + total_dur * 2 + 3600
+        for _, end, _ in arc_windows:
+            if end > max_obs_end:
+                max_obs_end = end
 
-    # Free waiting loops: unobstructed incident edges can be cycled to burn time.
-    free_loops: list[list[tuple[str, int, float]]] = [[] for _ in range(n_nodes)]
-    for idx, (u, v, edge_id, duration) in enumerate(arcs):
-        if duration > 0 and not windows[idx]:
-            traversals = 1 if u == v else 2
-            free_loops[u].append((edge_id, traversals, duration * traversals))
+    # ------------------------------------------------------------
+    # Regimes at each node.
+    #
+    # A regime is an interval between obstruction boundaries.
+    # ------------------------------------------------------------
 
-    node_boundaries: list[list[float]] = []
+    node_regime_bounds: list[list[float]] = [
+        [] for _ in range(n_nodes)
+    ]
+
     for u in range(n_nodes):
-        boundaries = {
-            point
-            for arc in arcs_by_node[u]
-            for s, e, _ in windows[arc]
-            for point in (s, e)
-        }
-        node_boundaries.append(sorted(boundaries))
+        boundaries: set[float] = set()
 
-    # For each node, compute the set of time boundary points where the
-    # outgoing-edge factor profile changes.  Two arrivals at the same node in
-    # the same "regime" (between the same pair of boundaries) produce
-    # identical outgoing behaviour, so the later one can be pruned.
-    # Arrivals in *different* regimes must both be explored.
-    node_regime_bounds: list[list[float]] = []
+        for arc_idx in arcs_by_node[u]:
+            for s, e, _ in windows[arc_idx]:
+                boundaries.add(s)
+                boundaries.add(e)
+
+        node_regime_bounds[u] = sorted(boundaries)
+
+    # ------------------------------------------------------------
+    # Static shortest path after all obstructions disappear.
+    #
+    # We calculate this once. This gives us a useful way to finish
+    # the search once we reach the post-obstruction regime.
+    # ------------------------------------------------------------
+
+    static_dist = [INF] * n_nodes
+    static_dist[end_idx] = 0.0
+
+    reverse_static: list[list[tuple[int, float]]] = [
+        [] for _ in range(n_nodes)
+    ]
+
     for u in range(n_nodes):
-        pts: set[float] = set()
-        for arc in arcs_by_node[u]:
-            for s in seg_starts[arc]:
-                if s != -INF:
-                    pts.add(s)
-            for e in seg_ends[arc]:
-                if e != INF:
-                    pts.add(e)
-        node_regime_bounds.append(sorted(pts))
+        for arc_idx in arcs_by_node[u]:
+            _, v, _, duration = arcs[arc_idx]
+            reverse_static[v].append((u, duration))
 
-    # --- Dijkstra over (node, arrival_time) ---
-    parent: dict[tuple[int, float], tuple[int | None, float | None, Any]] = {}
+    static_heap: list[tuple[float, int]] = [
+        (0.0, end_idx)
+    ]
+
+    while static_heap:
+        d, v = heapq.heappop(static_heap)
+
+        if d != static_dist[v]:
+            continue
+
+        for u, weight in reverse_static[v]:
+            nd = d + weight
+
+            if nd < static_dist[u]:
+                static_dist[u] = nd
+                heapq.heappush(static_heap, (nd, u))
+
+    # ------------------------------------------------------------
+    # State:
+    #
+    # heap item:
+    #     (arrival_time, counter, node)
+    #
+    # We retain exact arrival times for reconstruction.
+    # ------------------------------------------------------------
+
     heap: list[tuple[float, int, int]] = []
-    _cnt = 0
 
-    def push(arrival: float, node: int, prev_node: int | None, prev_time: float | None, action: Any) -> None:
-        nonlocal _cnt
-        if arrival > time_horizon:
-            return
+    parent: dict[
+        tuple[int, float],
+        tuple[int | None, float | None, Any],
+    ] = {}
+
+    counter = 0
+
+    def push(
+        arrival: float,
+        node: int,
+        prev_node: int | None,
+        prev_time: float | None,
+        action: Any,
+    ) -> None:
+        nonlocal counter
+
         key = (node, arrival)
-        if key not in parent:
-            parent[key] = (prev_node, prev_time, action)
-            _cnt += 1
-            heapq.heappush(heap, (arrival, _cnt, node))
 
-    push(t0, start_idx, None, None, None)
-    # Track which (node, regime_index) pairs we've already expanded.
+        if key in parent:
+            return
+
+        parent[key] = (
+            prev_node,
+            prev_time,
+            action,
+        )
+
+        counter += 1
+        heapq.heappush(
+            heap,
+            (arrival, counter, node),
+        )
+
+    push(
+        t0,
+        start_idx,
+        None,
+        None,
+        None,
+    )
+
+    # ------------------------------------------------------------
+    # We only need the earliest arrival in each regime.
+    # ------------------------------------------------------------
+
     visited_regime: set[tuple[int, int]] = set()
+
     best_time: float | None = None
-    pops = 0
+
+    # ------------------------------------------------------------
+    # Search
+    # ------------------------------------------------------------
 
     while heap:
-        t, _, u = heapq.heappop(heap)
-        key = (u, t)
+        if _time.monotonic() - wall_start > DEFAULT_CASE_BUDGET_SECS:
+            return UNREACHABLE
 
-        # Determine which regime this arrival falls into.
-        regime = bisect_right(node_regime_bounds[u], t)
+        t, _, u = heapq.heappop(heap)
+
+        regime = bisect_right(
+            node_regime_bounds[u],
+            t,
+        )
+
         regime_key = (u, regime)
+
         if regime_key in visited_regime:
             continue
-        visited_regime.add(regime_key)
-        pops += 1
 
-        # Safety valves
-        if pops > MAX_POPS:
-            return UNREACHABLE
-        if pops & 0xFF == 0 and _time.monotonic() - wall_start > CASE_BUDGET_SECS:
-            return UNREACHABLE
+        visited_regime.add(regime_key)
+
+        # --------------------------------------------------------
+        # Destination
+        # --------------------------------------------------------
 
         if u == end_idx:
             best_time = t
             break
 
-        # Record this key for path reconstruction
-        if key not in parent:
-            parent[key] = (None, None, None)
+        # --------------------------------------------------------
+        # Important optimization:
+        #
+        # If we're already after the final obstruction, the graph
+        # is static. Therefore the remaining optimal path is simply
+        # static_dist[u].
+        # --------------------------------------------------------
 
-        # Normal edge traversals.
-        for arc in arcs_by_node[u]:
+        if t >= max_obs_end and static_dist[u] < INF:
+            final_time = t + static_dist[u]
+
+            # Reconstructing the static suffix is handled below
+            # by simply continuing normal edge relaxation.
+            #
+            # We don't terminate here because we still need parent
+            # information for the actual path.
+            pass
+
+        # --------------------------------------------------------
+        # Normal edge traversal
+        # --------------------------------------------------------
+
+        for arc_idx in arcs_by_node[u]:
+            _, v, _, duration = arcs[arc_idx]
+
             arrival = travel_time(
-                seg_starts[arc], seg_ends[arc], seg_factors[arc], arcs[arc][3], t
+                seg_starts[arc_idx],
+                seg_ends[arc_idx],
+                seg_factors[arc_idx],
+                duration,
+                t,
             )
+
             if arrival is None:
                 continue
-            v = arcs[arc][1]
-            push(arrival, v, u, t, ("edge", arcs[arc][2]))
 
-        # "Waiting" by cycling on unobstructed loops until the next time the
-        # environment at this node changes (an outgoing obstruction boundary).
-        boundaries = node_boundaries[u]
-        pos = bisect_right(boundaries, t)
-        if pos < len(boundaries):
-            next_boundary = boundaries[pos]
-            for edge_id, traversals, loop_duration in free_loops[u]:
-                loops = ceil((next_boundary - t) / loop_duration)
-                loops = max(loops, 1)
-                jump_time = t + loops * loop_duration
-                if jump_time > t:
-                    push(jump_time, u, u, t, ("loop", edge_id, loops * traversals))
+            edge_id = arcs[arc_idx][2]
+
+            push(
+                arrival,
+                v,
+                u,
+                t,
+                ("edge", edge_id),
+            )
+
+        # --------------------------------------------------------
+        # Cycle optimization
+        #
+        # Try u -> v -> u.
+        #
+        # Unlike the old implementation, BOTH directions are
+        # evaluated using travel_time(), so obstructions are
+        # respected.
+        # --------------------------------------------------------
+
+        boundaries = node_regime_bounds[u]
+
+        pos = bisect_right(
+            boundaries,
+            t,
+        )
+
+        if pos >= len(boundaries):
+            # There are no more local boundaries.
+            # No reason to deliberately cycle.
+            continue
+
+        next_boundary = boundaries[pos]
+
+        # Try every immediate neighbour as a possible 2-edge loop.
+        for first_arc in arcs_by_node[u]:
+
+            _, v, _, _ = arcs[first_arc]
+
+            # Find an arc v -> u.
+            return_arc = None
+
+            for candidate in arcs_by_node[v]:
+                if arcs[candidate][1] == u:
+                    return_arc = candidate
+                    break
+
+            if return_arc is None:
+                continue
+
+            # First traversal
+            t1 = travel_time(
+                seg_starts[first_arc],
+                seg_ends[first_arc],
+                seg_factors[first_arc],
+                arcs[first_arc][3],
+                t,
+            )
+
+            if t1 is None or t1 <= t:
+                continue
+
+            # Second traversal
+            t2 = travel_time(
+                seg_starts[return_arc],
+                seg_ends[return_arc],
+                seg_factors[return_arc],
+                arcs[return_arc][3],
+                t1,
+            )
+
+            if t2 is None or t2 <= t1:
+                continue
+
+            loop_duration = t2 - t
+
+            # How many repetitions are required to cross the
+            # next obstruction boundary?
+            repetitions = max(
+                1,
+                ceil(
+                    (next_boundary - t)
+                    / loop_duration
+                ),
+            )
+
+            jump_time = t + repetitions * loop_duration
+
+            if jump_time <= t:
+                continue
+
+            # Avoid exploding the path with enormous cycle counts.
+            # The loop is represented compactly in parent.
+            push(
+                jump_time,
+                u,
+                u,
+                t,
+                (
+                    "cycle2",
+                    arcs[first_arc][2],
+                    arcs[return_arc][2],
+                    repetitions,
+                ),
+            )
 
     if best_time is None:
         return UNREACHABLE
 
+    # ------------------------------------------------------------
+    # Reconstruct path
+    # ------------------------------------------------------------
+
     path: list[str] = []
+
     node: int | None = end_idx
-    t = best_time
+    current_time = best_time
+
     while node is not None:
-        prev_node, prev_time, action = parent[(node, t)]
+        key = (node, current_time)
+
+        prev_node, prev_time, action = parent[key]
+
         if prev_node is None:
             break
+
         if action[0] == "edge":
             path.append(action[1])
-        else:
-            path.extend([action[1]] * action[2])
-        node, t = prev_node, prev_time if prev_time is not None else t0
+
+        elif action[0] == "cycle2":
+            edge1 = action[1]
+            edge2 = action[2]
+            repetitions = action[3]
+
+            for _ in range(repetitions):
+                path.append(edge1)
+                path.append(edge2)
+
+        node = prev_node
+        current_time = prev_time  # type: ignore
 
     path.reverse()
+
     return {
-        "total_duration_sec": format_duration(best_time - t0),
+        "total_duration_sec": format_duration(
+            best_time - t0
+        ),
         "arrival_time": format_time(best_time),
         "path": path,
     }
