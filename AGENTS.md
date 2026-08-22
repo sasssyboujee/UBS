@@ -40,10 +40,37 @@ Production-grade FastAPI service for the UBS Singapore Global Coding Challenge, 
 
 - Ranked by **total score across all challenges**; ties are broken by **ascending completion time**.
 
+## SHOWDOWN Challenge
+
+Heads-up no-limit betting game between bots. We expose one HTTP endpoint; the coordinator deals, runs the betting, and calls us whenever it is our turn.
+
+### Endpoints
+
+- `POST /move` — called on our turn. Reply within 5 seconds with HTTP 200 and `{"action": "check" | "call" | "bet" | "raise" | "fold", "amount": <int>}`. `amount` is required only for `bet`/`raise` and is the **total for the current betting round**; it must fall inside `[min_raise_to, max_raise_to]`.
+- `GET /health` (and `/healthz`) — warm-up probe; return HTTP 200.
+
+### Game rules (standard table)
+
+- Each hand: forced bets (blinds 1 and 2, alternating with the button), deal one secret number 1–13 to each player, `pre_reveal` betting round, reveal one community number 1–13, `post_reveal` betting round, showdown.
+- Showdown: a **pair** (your number == community number) beats any non-pair; otherwise higher number wins; identical results split the pot. Fold wins immediately and nothing is revealed.
+- No-limit: stack is the only ceiling. Scoring is by chip delta (start 200 per match); busting at 0 locks in −200.
+- `legal_actions` on every request is authoritative — always reply with one of them. `players` is a list in seat order and always contains us under the name `"you"`; ignore unknown fields (the coordinator adds fields over the event and never removes them).
+- Position: the button pays the small blind and acts first `pre_reveal`; the order flips after the reveal. We never need to compute order ourselves, but `button_seat` indicates which side we are on.
+- Five consecutive bad responses forfeit the match; the coordinator never retries, so `/move` must stay fast and side-effect-free.
+
+### Bot strategy (`app/strategy.py`)
+
+- `pre_reveal_equity(card)` = `(11 * card + 1) / 169` vs a random opponent.
+- `post_reveal_equity(card, community)` = `25/26` for a pair; otherwise `(wins + 0.5 ties) / 13`.
+- Decide via pot odds vs equity with aggression-adjusted margins; value-raise strong cards, fold weak hands to big bets, occasional deterministic bluffs, never fold a pair.
+- Unknown `table_rule` values fall back to a conservative check/call-small/fold strategy. Phase guides add twists on top of this page's rules.
+
 ## Project Structure & Module Organization
 
-- `app/` — FastAPI source; `app/main.py` defines the app, routes, Pydantic models, and middleware.
-- `tests/` — pytest suite; `tests/test_main.py` covers the API.
+- `app/` — FastAPI source; `app/main.py` defines the app, routes, and middleware.
+- `app/models.py` — Pydantic request/response schemas for the SHOWDOWN `/move` endpoint.
+- `app/strategy.py` — pure decision logic for the SHOWDOWN betting bot (equity, pot odds, legal-action guard).
+- `tests/` — pytest suite; `tests/test_main.py` covers the API, `tests/test_strategy.py` covers strategy logic.
 - `main.py` — root entry-point stub.
 - `pyproject.toml` — project metadata, dependencies, and uv config.
 - `render.yaml` — Render web service deployment config.
