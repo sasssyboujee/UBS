@@ -81,13 +81,14 @@ def _compute_slo(
     slo_query: SloQuery | None,
 ) -> SloOutput | None:
 
-    # No SLO information at all.
+    if not heartbeats:
+        return None if slo_query is None else SloOutput(
+            availability=0.0,
+            p95LatencyMs=0,
+        )
+
     if slo_query is None:
-        if not heartbeats:
-            return None
-
         window = heartbeats
-
     else:
         window = [
             hb
@@ -98,29 +99,27 @@ def _compute_slo(
             )
         ]
 
-    # Query exists but nothing matched.
     if not window:
         return SloOutput(
             availability=0.0,
             p95LatencyMs=0,
         )
 
+    # Availability
     ok_count = sum(
         1
         for hb in window
-        if hb.status.upper() == "OK"
+        if hb.status.strip().upper() == "OK"
     )
 
     availability = ok_count / len(window)
-
+    # P95
     latencies = sorted(
         hb.latencyMs
         for hb in window
     )
 
-    # Nearest-rank p95.
     rank = math.ceil(0.95 * len(latencies))
-
     p95_latency = latencies[rank - 1]
 
     return SloOutput(

@@ -148,7 +148,7 @@ class Heartbeat(BaseModel):
 
     service: str
     timestamp: int
-    latencyMs: int
+    latencyMs: int = Field(..., ge=0)
     status: str
 
 
