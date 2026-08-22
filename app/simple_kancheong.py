@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 """Kan Chiong Delivery Driver — time-dependent shortest path solver.
 
 Correctness notes
@@ -33,13 +32,6 @@ import time as _time
 from bisect import bisect_right
 from datetime import UTC, datetime
 from itertools import pairwise
-=======
-import json
-import heapq
-import itertools
-import math
-from datetime import datetime, timezone
->>>>>>> 4cf4f3d24e72309dd1880be872a2379cf2758aca
 from typing import Any
 
 EPS = 1e-6
