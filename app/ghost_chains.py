@@ -11,15 +11,19 @@ added and count, over every pair (s, t) where s can already reach u and v can
 already reach t:
 
 * ``new``  — pairs that were not connected before (the edge extends reach).
+  The trivial direct pair (u, v) is subtracted, so the very first edge of a
+  graph contributes nothing: a single isolated transfer is boring.
 * ``par``  — pairs that were already connected (the edge adds an alternative
   route, i.e. convergence / a shortened path).
-* ``cycle`` — whether v could already reach u, so the edge closes a loop.
+* ``cycle`` — whether the edge itself closes a loop (v already reached u, or
+  u == v).  Only a genuinely new edge can close a loop; a repeated edge does
+  not change reachability.
 * ``multi`` — if the edge closes a loop, how many other nodes already sit on a
   cycle through the destination; two independent return paths are stronger
   than a single return.
-* ``fan``  — the destination's existing in-neighbours plus the source's
-  existing out-neighbours, so fan-in / fan-out activity is never scored as
-  zero.
+
+Repeated edges (same u -> v again) create no new reachability but add parallel
+capacity, so they score through ``par``.  Self-loops are cycles.
 
 The raw signal is mapped to [0, 1] monotonically.  The first edge between two
 isolated entities yields 0.0; extensions, convergences, single returns and
@@ -34,14 +38,16 @@ an incoming edge u -> v the identity evidence is:
 
 * ``shift``   — the edge carries a value that differs from the value(s) carried
   by earlier legs into u.  An identity change inside a continuous flow is
-  suspicious.
+  suspicious; when several distinct values already flow into u the change is
+  ambiguous and weighted down.
 * ``drop``    — the edge omits the attribute even though an earlier leg into u
   carried it.  A consistent flow that stops carrying its identity is
   suspicious; when several distinct values already flow into u the absence is
   ambiguous and weighted down.
 * ``reuse``   — the value already appears on active edges in other weakly
-  connected components.  Shared infrastructure across disconnected components
-  is a coordination hint, weaker than shift/drop.
+  connected components (including a component the edge is about to bridge).
+  Shared infrastructure across disconnected components is a coordination hint,
+  weaker than shift/drop.
 * ``agree``   — the value matches an earlier leg into u.  Identity lines up
   with the structural flow and slightly reinforces it, scaled by the
   structural score of the edge.
@@ -54,9 +60,13 @@ identity fields are present.
 Temporal model
 --------------
 Only transactions whose ``createdAt`` lies inside the most recent 24 hours are
-active.  Expired edges are removed from the graph before scoring, and the
+active.  The window is anchored at the greatest ``createdAt`` observed so far
+(event time), so the window never moves backwards when transactions arrive out
+of order.  Expired edges are removed from the graph before scoring, and the
 reachability closure is rebuilt when edges expire.  The boundary is inclusive:
-an edge exactly 24 hours old is still active.
+an edge exactly 24 hours old is still active.  A transaction whose
+``createdAt`` is already outside the window when it arrives is scored but not
+inserted into the active graph.
 
 Idempotency
 -----------
@@ -80,10 +90,9 @@ LOOKBACK = timedelta(hours=24)
 W_PAR = 2.0      # an alternative route between already-connected nodes
 W_CYCLE = 10.0   # the edge closes a return path
 W_MULTI = 15.0   # per additional node already on a cycle through destination
-W_FAN = 0.5      # per existing in-neighbour of v / out-neighbour of u
 
 # Score weights for the identity raw signal (Phase 2).
-W_SHIFT = 3.0    # identity value changes mid-flow
+W_SHIFT = 3.0    # identity value changes mid-flow (scaled by ambiguity)
 W_DROP = 2.0     # a consistent flow stops carrying its identity
 W_REUSE = 1.0    # per disconnected component that already carries the value
 W_AGREE = 1.5    # identity lines up with the structural flow (scaled by it)
@@ -158,7 +167,7 @@ class GhostChainScorer:
     def _parse_time(created_at: str) -> float | None:
         try:
             text = created_at.strip()
-            if text.endswith("Z"):
+            if text.endswith(("Z", "z")):
                 text = text[:-1] + "+00:00"
             dt = datetime.fromisoformat(text)
             if dt.tzinfo is None:
@@ -191,10 +200,12 @@ class GhostChainScorer:
         ip = self._norm_identity(getattr(tx, "ipAddress", None))
         device = self._norm_identity(getattr(tx, "deviceId", None))
 
-        self._expire_before(timestamp - LOOKBACK.total_seconds())
+        cutoff = self.window_end - LOOKBACK.total_seconds()
+        self._expire_before(cutoff)
 
         risk = self._score_edge(tx.fromUserId, tx.toUserId, ip, device)
-        self._apply_edge(tx.fromUserId, tx.toUserId, timestamp, tx.txId, ip, device)
+        if timestamp >= cutoff:
+            self._apply_edge(tx.fromUserId, tx.toUserId, timestamp, tx.txId, ip, device)
         self.seen[tx.txId] = (risk, signature)
         return tx.txId, risk
 
@@ -244,47 +255,35 @@ class GhostChainScorer:
         self._node_index(v)
 
         edge_count = self.adj.get(u, {}).get(v, 0)
-        if u == v or edge_count > 0:
-            # Degenerate or repeated edge: no new structural capacity.
-            return 0.0
-
-        structural = self._structural_raw(u, v)
+        structural = self._structural_raw(u, v, is_new=edge_count == 0)
         identity = self._identity_raw(u, v, ip, device, structural)
         raw = structural + identity
         return raw / (raw + SATURATION)
 
-    def _structural_raw(self, u: str, v: str) -> float:
+    def _structural_raw(self, u: str, v: str, *, is_new: bool) -> float:
         u_idx = self.node_ids[u]
         srcs = self.rev[u]
         dsts = self.reach[v]
 
         new_pairs = 0
         par_pairs = 0
-        for s_idx in self._iter_bits(srcs):
-            s_name = self.id_to_node[s_idx]
-            reach_s = self.reach[s_name]
-            new_pairs += (dsts & ~reach_s).bit_count()
-            par_pairs += (dsts & reach_s & ~(1 << s_idx)).bit_count()
+        if u != v:
+            # A self-loop creates no new simple path between distinct entities:
+            # it is scored purely as a cycle below.
+            for s_idx in self._iter_bits(srcs):
+                s_name = self.id_to_node[s_idx]
+                reach_s = self.reach[s_name]
+                new_pairs += (dsts & ~reach_s).bit_count()
+                par_pairs += (dsts & reach_s & ~(1 << s_idx)).bit_count()
 
-        cycle = 1 if (self.reach[v] >> u_idx) & 1 else 0
+        cycle = 0
         multi = 0
-        if cycle:
+        if is_new and (u == v or (self.reach[v] >> u_idx) & 1):
+            cycle = 1
             scc = self.rev[v] & self.reach[v]
             multi = scc.bit_count() - 1
 
-        u_activity = self.in_deg.get(u, 0) + self.out_deg.get(u, 0)
-        v_activity = self.in_deg.get(v, 0) + self.out_deg.get(v, 0)
-        isolated = u_activity == 0 and v_activity == 0
-        baseline = 1 if isolated else 0
-        fan = self.in_deg.get(v, 0) + self.out_deg.get(u, 0)
-
-        return (
-            max(0, new_pairs - baseline)
-            + W_PAR * par_pairs
-            + W_FAN * fan
-            + W_CYCLE * cycle
-            + W_MULTI * multi
-        )
+        return max(0, new_pairs - 1) + W_PAR * par_pairs + W_CYCLE * cycle + W_MULTI * multi
 
     # ------------------------------------------------------------------
     # Identity signal (Phase 2)
@@ -322,28 +321,32 @@ class GhostChainScorer:
             return 0.0
 
         comp_u = self._uf_find(u)
-        comp_v = self._uf_find(v)
         raw = 0.0
         agree = 0.0
 
         if value is not None:
             # Shared identity across disconnected components: a coordination
-            # hint, weighted by the number of distinct other components.
+            # hint, weighted by the number of distinct components other than
+            # the source's own that already carry the value.  The destination
+            # component is included when it is still disconnected, because an
+            # edge that bridges two components which both already carry the
+            # value is itself evidence of coordination.
             edges = edge_counts.get(value)
             if edges:
                 other_components: set[str] = set()
                 for a, _b in edges:
                     comp_a = self._uf_find(a)
-                    if comp_a != comp_u and comp_a != comp_v:
+                    if comp_a != comp_u:
                         other_components.add(comp_a)
                 raw += W_REUSE * len(other_components)
 
-            # Shift versus agreement with the flow entering u.
+            # Shift versus agreement with the flow entering u.  Several
+            # distinct earlier values make either interpretation ambiguous.
             if prev_values:
                 if value in prev_values:
                     agree = 1.0 / len(prev_values)
                 else:
-                    raw += W_SHIFT
+                    raw += W_SHIFT / len(prev_values)
         else:
             # Missing identity after earlier legs carried it.  A consistent
             # flow that stops carrying its identity is suspicious; several
