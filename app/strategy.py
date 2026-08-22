@@ -21,6 +21,7 @@ import os
 import tempfile
 import zlib
 from collections import OrderedDict
+from math import comb
 from pathlib import Path
 
 from app.models import MoveRequest, MoveResponse
@@ -242,10 +243,12 @@ def _to_int(value) -> int | None:
 
 
 def _record_hand(req: MoveRequest, codename: str, hand) -> None:
-    """Fold one showdown result into the codename model.
+    """Fold every pairwise showdown result in a hand into the codename model.
 
-    The coordinator's exact field shapes vary between phases (winners as seats
-    or names, numbers as ints or strings), so this is deliberately tolerant.
+    Phase 3 hands are multiway: ``shown_numbers`` may contain several seats and
+    ``winners`` several winners. We record every pair whose outcome can be
+    inferred (a winner beats every non-winner at showdown; co-winners tie),
+    which learns the rule from our hands and from opponents' hands alike.
     """
     comm = _to_int(hand.community_number)
     if comm is None:
@@ -254,69 +257,97 @@ def _record_hand(req: MoveRequest, codename: str, hand) -> None:
     if len(shown) < 2:
         return
 
-    # Our number: prefer the "you" key, fall back to our seat as a string.
-    our_num = _to_int(shown.get("you"))
-    if our_num is None:
-        our_num = _to_int(shown.get(str(req.your_seat)))
-    if our_num is None:
+    # Parse every shown (key -> number) pair we can coerce.
+    entries: list[tuple[object, int]] = []
+    for key, value in shown.items():
+        num = _to_int(value)
+        if num is not None:
+            entries.append((key, num))
+    if len(entries) < 2:
         return
-
-    # Opponent's number: the other key in shown_numbers.
-    opp_key = next(
-        (k for k in shown if k not in ("you", str(req.your_seat))), None
-    )
-    if opp_key is None:
-        return
-    opp_num = _to_int(shown.get(opp_key))
-    if opp_num is None:
-        return
-
-    our_idx = _hand_index(our_num, our_num == comm)
-    opp_idx = _hand_index(opp_num, opp_num == comm)
 
     winners = set(hand.winners or [])
     if not winners:
         return
 
-    # Winners may be seats (ints) or names (strings); accept both.
-    our_markers = {req.your_seat, "you", str(req.your_seat)}
-    opp_markers = {1 - req.your_seat, opp_key}
-    we_won = bool(winners & our_markers)
-    opp_won = bool(winners & opp_markers)
-    if not we_won and not opp_won:
-        return
+    def markers(key) -> set:
+        marks = {key, str(key)}
+        if key == "you":
+            marks.add(req.your_seat)
+            marks.add(str(req.your_seat))
+        else:
+            seat = _to_int(key)
+            if seat is not None:
+                marks.add(seat)
+                marks.add(str(seat))
+        return marks
+
+    won = {key: bool(markers(key) & winners) for key, _ in entries}
 
     stats = _stats(codename)
     pairs = _RULE_PAIRS.setdefault(codename, {})
-    if we_won and opp_won:
-        # Split pot: both hands have equal showdown value.
-        _bump(stats, our_idx, opp_idx, 0.5)
-        _bump(stats, opp_idx, our_idx, 0.5)
-        _add_pair(pairs, (our_num, opp_num, comm), 0.5)
-        _add_pair(pairs, (opp_num, our_num, comm), 0.5)
-    elif we_won:
-        _bump(stats, our_idx, opp_idx, 1.0)
-        _add_pair(pairs, (our_num, opp_num, comm), 1.0)
-    else:
-        _bump(stats, opp_idx, our_idx, 1.0)
-        _add_pair(pairs, (opp_num, our_num, comm), 1.0)
 
-    # Learn the opponent's betting range from hands that reached showdown:
-    # what did they show down after betting/raising?
-    opp_seat = 1 - req.your_seat
-    for action in hand.actions or []:
-        if getattr(action, "seat", None) != opp_seat:
-            continue
-        act = getattr(action, "action", "")
-        if act not in ("bet", "raise"):
-            continue
-        if getattr(action, "round", "") == "pre_reveal":
-            _remember(_OPP_PRE_RAISE_CARDS, opp_num)
-        elif getattr(action, "round", "") == "post_reveal":
-            if act == "raise":
-                _remember(_OPP_POST_RAISE_CARDS, opp_num)
+    for i in range(len(entries)):
+        key_a, num_a = entries[i]
+        for j in range(i + 1, len(entries)):
+            key_b, num_b = entries[j]
+            a_won = won[key_a]
+            b_won = won[key_b]
+            if a_won == b_won:
+                # Both won (tie) or neither won (outcome vs a third player is
+                # unknown) — only ties are informative.
+                if a_won and b_won:
+                    _bump(stats, _hand_index(num_a, num_a == comm),
+                          _hand_index(num_b, num_b == comm), 0.5)
+                    _bump(stats, _hand_index(num_b, num_b == comm),
+                          _hand_index(num_a, num_a == comm), 0.5)
+                    _add_pair(pairs, (num_a, num_b, comm), 0.5)
+                    _add_pair(pairs, (num_b, num_a, comm), 0.5)
+                continue
+            if a_won:
+                win_num, lose_num = num_a, num_b
             else:
-                _remember(_OPP_POST_BET_CARDS, opp_num)
+                win_num, lose_num = num_b, num_a
+            _bump(stats, _hand_index(win_num, win_num == comm),
+                  _hand_index(lose_num, lose_num == comm), 1.0)
+            _add_pair(pairs, (win_num, lose_num, comm), 1.0)
+
+    # Learn opponent betting ranges from hands that reached showdown: what did
+    # each opponent show down after betting/raising? (Not used by the phase-3
+    # strategy, but cheap to record for future phases.)
+    name_to_seat = {player.name: player.seat for player in req.players}
+
+    def seat_for(key) -> int | None:
+        if key == "you":
+            return req.your_seat
+        seat = _to_int(key)
+        if seat is not None:
+            return seat
+        if key in name_to_seat:
+            return name_to_seat[key]
+        if len(entries) <= 2:
+            return 1 - req.your_seat  # heads-up fallback
+        return None
+
+    for key, num in entries:
+        if key == "you":
+            continue
+        seat = seat_for(key)
+        if seat is None or seat == req.your_seat:
+            continue
+        for action in hand.actions or []:
+            if getattr(action, "seat", None) != seat:
+                continue
+            act = getattr(action, "action", "")
+            if act not in ("bet", "raise"):
+                continue
+            if getattr(action, "round", "") == "pre_reveal":
+                _remember(_OPP_PRE_RAISE_CARDS, num)
+            elif getattr(action, "round", "") == "post_reveal":
+                if act == "raise":
+                    _remember(_OPP_POST_RAISE_CARDS, num)
+                else:
+                    _remember(_OPP_POST_BET_CARDS, num)
 
 
 def _hand_hash(hand) -> int:
@@ -906,6 +937,163 @@ def _lockdown_nit_move(
 
 
 # ---------------------------------------------------------------------------
+# Phase 3 (six-seat multiway) strategy
+# ---------------------------------------------------------------------------
+# Scoring is winner-take-all (strictly top the table), so utility is linear in
+# chips: play each hand for chip EV. The strategy is deliberately simple and
+# robust — jam near-nut hands, steal blinds in position with strong cards, and
+# fold everything else. Unknown codenames stay in a conservative exploration
+# mode until the learned model has seen enough showdowns to identify monsters.
+
+_P3_MIN_OBS = 10
+_P3_MONSTER = 0.85
+_P3_STEAL = 0.74
+_P3_STEAL_MAX_BEHIND = 2
+
+
+def _live_opponents(req: MoveRequest) -> int:
+    """Number of opponents still in the current hand."""
+    n = 0
+    for player in req.players:
+        if player.seat == req.your_seat:
+            continue
+        if player.folded or player.busted:
+            continue
+        n += 1
+    return n
+
+
+def _acted_this_round(req: MoveRequest, seat: int) -> bool:
+    for action in req.current_hand_actions or []:
+        if getattr(action, "round", "") == req.round and action.seat == seat:
+            return True
+    return False
+
+
+def _opponents_behind(req: MoveRequest) -> int:
+    """Live opponents who have not yet acted this betting round.
+
+    If the action log is empty or uses unexpected round labels this overcounts,
+    which makes positional steals conservative rather than reckless.
+    """
+    behind = 0
+    for player in req.players:
+        if player.seat == req.your_seat:
+            continue
+        if player.folded or player.busted:
+            continue
+        if _acted_this_round(req, player.seat):
+            continue
+        behind += 1
+    return behind
+
+
+def _multi_share(card: int, comm: int, codename: str, n_opp: int) -> float:
+    """Our showdown share vs ``n_opp`` random opponents under a codename.
+
+    Counts how many opponent cards we beat/tie under the (possibly learned)
+    rule and applies the exact multinomial formula, assuming opponents' cards
+    are independent draws from 1..13.
+    """
+    wins = ties = 0
+    for opp in range(1, 14):
+        share = _rule_showdown(card, opp, comm, codename)
+        if share > 0.75:
+            wins += 1
+        elif share > 0.25:
+            ties += 1
+    total = 0.0
+    for i in range(n_opp + 1):
+        total += (
+            comb(n_opp, i)
+            * ((ties / 13.0) ** i)
+            * ((wins / 13.0) ** (n_opp - i))
+            / (i + 1)
+        )
+    return total
+
+
+def _equity_pre_multi(card: int, codename: str, n_opp: int) -> float:
+    return sum(_multi_share(card, comm, codename, n_opp) for comm in range(1, 14)) / 13.0
+
+
+def _equity_post_multi(card: int, community: int, codename: str, n_opp: int) -> float:
+    return _multi_share(card, community, codename, n_opp)
+
+
+def _phase3_raise_to(req: MoveRequest, target: int) -> int:
+    target = max(_our_bet_this_round(req), target)
+    if req.min_raise_to is not None:
+        target = max(target, req.min_raise_to)
+    if req.max_raise_to is not None:
+        target = min(target, req.max_raise_to)
+    return target
+
+
+def _phase3_move(req: MoveRequest, legal: set[str], codename: str) -> MoveResponse:
+    """Six-seat strategy: shove monsters, steal in position, otherwise fold."""
+    card = req.your_number or 1
+    comm = req.community_number
+    to_call = req.to_call or 0
+    pot = req.pot or 0
+
+    obs = _codename_observations(codename)
+    learned = codename in KNOWN_TABLE_RULES or obs >= _P3_MIN_OBS
+
+    if req.round == "pre_reveal":
+        s1 = _equity_pre(card, codename)
+        steal_ok = s1 >= _P3_STEAL and _opponents_behind(req) <= _P3_STEAL_MAX_BEHIND
+        # The learned model is biased by selective showdown sampling, so the
+        # absolute equity of mid-high cards is inflated. Shove pre-reveal only
+        # with the single best card under the (possibly learned) rule.
+        best_s1 = max(_equity_pre(c, codename) for c in range(1, 14))
+        monster = s1 >= _P3_MONSTER and s1 >= best_s1 - 1e-9
+    else:
+        if comm is None:
+            return MoveResponse(action="check" if to_call == 0 else "fold")
+        s1 = _equity_post(card, comm, codename)
+        steal_ok = False
+        monster = s1 >= _P3_MONSTER
+
+    if not learned:
+        # Exploration: keep pots tiny and reach showdown cheaply to learn the
+        # rule. Never commit a meaningful stack on an unlearned codename.
+        if to_call == 0:
+            return MoveResponse(action="check")
+        if to_call <= 2 and "call" in legal:
+            return MoveResponse(action="call")
+        if "fold" in legal:
+            return MoveResponse(action="fold")
+        return MoveResponse(action="check")
+
+    if monster:
+        if to_call == 0:
+            if "raise" in legal and req.max_raise_to is not None:
+                return MoveResponse(action="raise", amount=req.max_raise_to)
+            if "bet" in legal and req.max_raise_to is not None:
+                return MoveResponse(action="bet", amount=req.max_raise_to)
+            return MoveResponse(action="check")
+        if "raise" in legal and req.max_raise_to is not None:
+            return MoveResponse(action="raise", amount=req.max_raise_to)
+        if "call" in legal:
+            return MoveResponse(action="call")
+        return MoveResponse(action="check")
+
+    if to_call == 0:
+        if steal_ok and "raise" in legal:
+            target = _our_bet_this_round(req) + max(4, pot // 2 + 2)
+            return MoveResponse(action="raise", amount=_phase3_raise_to(req, target))
+        return MoveResponse(action="check")
+
+    # Completing the small blind costs the same as folding it.
+    if to_call <= 1 and "call" in legal:
+        return MoveResponse(action="call")
+    if "fold" in legal:
+        return MoveResponse(action="fold")
+    return MoveResponse(action="call")
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -933,16 +1121,20 @@ def _legalize(resp: MoveResponse, req: MoveRequest, legal: set[str]) -> MoveResp
 
 def choose_action(req: MoveRequest) -> MoveResponse:
     """Pick the bot's next action for a /move request.
-    
-    Experimental strategy:
-    - Phase 2 (codename != "standard"): after threshold, fold all the way; before threshold, go all-in if good card.
-    - Phase 1 (standard): use original logic.
+
+    - Phase 3 (six-seat multiway): rule-aware shove/steal/fold strategy.
+    - Phase 2 (codename != "standard"): coast at +100, otherwise shove good cards.
+    - Phase 1 (standard): original range-aware logic.
     """
     legal = set(req.legal_actions or [])
     _record_recent_hands(req)
 
     codename = req.table_rule or "standard"
-    
+
+    if req.phase >= 3 or len(req.players) > 2:
+        resp = _phase3_move(req, legal, codename)
+        return _legalize(resp, req, legal)
+
     if codename != "standard":
         delta = _our_chip_delta(req)
         # Coasting Phase: +100 guarantees we survive blind bleed (40 hands * 1.5 = 60 chips) and stay above +25
