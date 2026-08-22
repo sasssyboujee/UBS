@@ -1216,15 +1216,9 @@ def _phase3_move(req: MoveRequest, legal: set[str], codename: str) -> MoveRespon
 def _degen_move(req: MoveRequest, legal: set[str], codename: str) -> MoveResponse:
     """Below-safe-threshold disrupt line (phases 2+).
 
-    Builds a lead quickly while attacking the opponent bot's static range and
-    sizing assumptions rather than telegraphing a fixed 50% max-shove:
-
-      * monsters (pair or 12+) keep the variance spike but vary the size so the
-        opponent can't read a fixed "max shove = top range" signal;
-      * good cards (10-11) raise with off-tree (overbet-leaning) sizing and
-        occasionally flat-call a small bet as a trap;
-      * junk bluffs with irregular sizing a minority of the time, so a raise is
-        never a pure strength signal and never a clean size.
+    Adjusted strategy: "just flip a coin randomly go all in but if its a safe threshold
+    just play and as long as 1 good card just go ham".
+    Avoids multi-leg raising wars by shoving immediately with a good card or 50% bluff.
     """
     card = req.your_number or 1
     community = req.community_number
@@ -1233,36 +1227,19 @@ def _degen_move(req: MoveRequest, legal: set[str], codename: str) -> MoveRespons
     max_to = req.max_raise_to if req.max_raise_to is not None else stack
 
     is_pair = community is not None and card == community
+    is_good = is_pair or card >= 10
 
-    if is_pair or card >= 12:
-        amount = max_to if _chance(req, "degen_monster_shove", 70) else _offtree_raise(req, 1.8, "degen_monster", "value")
+    # Go ham with a good card or 50% coin flip bluff
+    if is_good or _chance(req, "degen_coin_flip", 50):
         if "raise" in legal:
-            return MoveResponse(action="raise", amount=amount)
+            return MoveResponse(action="raise", amount=max_to)
         if "bet" in legal:
-            return MoveResponse(action="bet", amount=amount)
+            return MoveResponse(action="bet", amount=max_to)
         if "call" in legal:
             return MoveResponse(action="call")
         return MoveResponse(action="check")
 
-    if card >= 10:
-        if to_call and to_call <= 6 and _chance(req, "degen_trap", 18) and "call" in legal:
-            return MoveResponse(action="call")
-        amount = _offtree_raise(req, 1.3, "degen_value", "value")
-        if "raise" in legal:
-            return MoveResponse(action="raise", amount=amount)
-        if "bet" in legal:
-            return MoveResponse(action="bet", amount=amount)
-        if "call" in legal:
-            return MoveResponse(action="call")
-        return MoveResponse(action="check")
-
-    if _chance(req, "degen_bluff", 30):
-        amount = _offtree_raise(req, 0.8, "degen_bluff", "bluff")
-        if "raise" in legal:
-            return MoveResponse(action="raise", amount=amount)
-        if "bet" in legal:
-            return MoveResponse(action="bet", amount=amount)
-
+    # Otherwise fold/play passive
     if to_call == 0:
         return MoveResponse(action="check")
     if to_call <= 2 and "call" in legal:
