@@ -183,3 +183,163 @@ def test_reset_clears_state():
     # After reset the same first transaction scores 0.0 again.
     results = post_transactions([make_tx("t3", "a", "b", timestamp(2))])
     assert results[0]["riskScore"] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 - identity signal
+# ---------------------------------------------------------------------------
+
+
+def test_consistent_identity_flow_reinforces_structure():
+    reset()
+    anonymous = post_transactions([
+        make_tx("t1", "m", "a", timestamp(0)),
+        make_tx("t2", "a", "c", timestamp(1)),
+        make_tx("t3", "c", "h", timestamp(2)),
+    ])
+    reset()
+    consistent = post_transactions([
+        make_tx("t1", "m", "a", timestamp(0), deviceId="dev_i"),
+        make_tx("t2", "a", "c", timestamp(1), deviceId="dev_i"),
+        make_tx("t3", "c", "h", timestamp(2), deviceId="dev_i"),
+    ])
+    # The same structural flow carrying a consistent device is at least as
+    # suspicious as an anonymous flow.
+    assert consistent[0]["riskScore"] == anonymous[0]["riskScore"] == 0.0
+    assert consistent[1]["riskScore"] >= anonymous[1]["riskScore"]
+    assert consistent[2]["riskScore"] > anonymous[2]["riskScore"]
+
+
+def test_identity_shift_mid_flow_scores_higher_than_consistent():
+    reset()
+    consistent = post_transactions([
+        make_tx("t1", "m", "a", timestamp(0), deviceId="dev_i"),
+        make_tx("t2", "a", "c", timestamp(1), deviceId="dev_i"),
+        make_tx("t3", "c", "h", timestamp(2), deviceId="dev_i"),
+    ])
+    reset()
+    shifted = post_transactions([
+        make_tx("t1", "m", "a", timestamp(0), deviceId="dev_i"),
+        make_tx("t2", "a", "c", timestamp(1), deviceId="dev_i"),
+        make_tx("t3", "c", "h", timestamp(2), deviceId="dev_a"),
+    ])
+    assert shifted[2]["riskScore"] > consistent[2]["riskScore"]
+
+
+def test_identity_shift_at_branch_edge():
+    reset()
+    results = post_transactions([
+        make_tx("t1", "m", "a", timestamp(0), deviceId="dev_i"),
+        make_tx("t2", "a", "c", timestamp(1), deviceId="dev_i"),
+        make_tx("t3", "a", "s", timestamp(2), deviceId="dev_i"),
+        make_tx("t4", "c", "o", timestamp(3), deviceId="dev_a"),
+    ])
+    # The branch that keeps the incoming device is less anomalous than the
+    # branch that introduces a new device.
+    assert results[3]["riskScore"] > results[2]["riskScore"]
+
+
+def test_shared_identity_across_disconnected_components():
+    reset()
+    no_identity = post_transactions([
+        make_tx("t1", "m", "a", timestamp(0)),
+        make_tx("t2", "c", "h", timestamp(1)),
+        make_tx("t3", "o", "s", timestamp(2)),
+    ])
+    reset()
+    shared = post_transactions([
+        make_tx("t1", "m", "a", timestamp(0), ipAddress="10.0.0.1"),
+        make_tx("t2", "c", "h", timestamp(1), ipAddress="10.0.0.1"),
+        make_tx("t3", "o", "s", timestamp(2), ipAddress="10.0.0.1"),
+    ])
+    # First use of an identity is free; each additional disconnected component
+    # that reuses it adds evidence of coordination.
+    assert shared[0]["riskScore"] == no_identity[0]["riskScore"] == 0.0
+    assert shared[1]["riskScore"] > no_identity[1]["riskScore"]
+    assert shared[2]["riskScore"] > shared[1]["riskScore"]
+
+
+def test_missing_identity_on_connected_path_is_suspicious():
+    reset()
+    anonymous = post_transactions([
+        make_tx("t1", "m", "a", timestamp(0)),
+        make_tx("t2", "a", "c", timestamp(1)),
+        make_tx("t3", "c", "h", timestamp(2)),
+    ])
+    reset()
+    dropped = post_transactions([
+        make_tx("t1", "m", "a", timestamp(0), deviceId="dev_i"),
+        make_tx("t2", "a", "c", timestamp(1), deviceId="dev_i"),
+        make_tx("t3", "c", "h", timestamp(2)),
+    ])
+    # Dropping the device on the third leg of a continuous flow is more
+    # suspicious than an unrelated missing device.
+    assert dropped[2]["riskScore"] > anonymous[2]["riskScore"]
+
+
+def test_identity_dimensions_are_independent():
+    reset()
+    ip_shift_only = post_transactions([
+        make_tx("t1", "m", "a", timestamp(0), ipAddress="ip_x", deviceId="dev_p"),
+        make_tx("t2", "a", "c", timestamp(1), ipAddress="ip_x", deviceId="dev_p"),
+        make_tx("t3", "c", "h", timestamp(2), ipAddress="ip_y", deviceId="dev_p"),
+    ])
+    reset()
+    both_shift = post_transactions([
+        make_tx("t1", "m", "a", timestamp(0), ipAddress="ip_x", deviceId="dev_p"),
+        make_tx("t2", "a", "c", timestamp(1), ipAddress="ip_x", deviceId="dev_p"),
+        make_tx("t3", "c", "h", timestamp(2), ipAddress="ip_y", deviceId="dev_q"),
+    ])
+    # ip and device are independent dimensions: shifting both is stronger.
+    assert both_shift[2]["riskScore"] > ip_shift_only[2]["riskScore"]
+
+
+def test_identity_state_expires_with_the_lookback_window():
+    reset()
+    post_transactions([
+        make_tx("t1", "m", "a", timestamp(0), ipAddress="10.0.0.1"),
+        make_tx("t2", "c", "h", timestamp(1), ipAddress="10.0.0.1"),
+    ])
+    # 24h + 1m later the first edge has expired, so only the second component
+    # remains as identity evidence for the incoming edge.
+    results = post_transactions([
+        make_tx("t3", "o", "s", timestamp(24 * 60 + 1), ipAddress="10.0.0.1"),
+    ])
+
+    reset()
+    post_transactions([
+        make_tx("t2", "c", "h", timestamp(1), ipAddress="10.0.0.1"),
+    ])
+    fresh = post_transactions([
+        make_tx("t3", "o", "s", timestamp(2), ipAddress="10.0.0.1"),
+    ])
+    assert results[0]["riskScore"] == fresh[0]["riskScore"]
+
+
+def test_empty_identity_strings_are_treated_as_absent():
+    reset()
+    with_empty = post_transactions([
+        make_tx("t1", "m", "a", timestamp(0), deviceId=""),
+        make_tx("t2", "a", "c", timestamp(1), deviceId="   "),
+        make_tx("t3", "c", "h", timestamp(2)),
+    ])
+    reset()
+    anonymous = post_transactions([
+        make_tx("t1", "m", "a", timestamp(0)),
+        make_tx("t2", "a", "c", timestamp(1)),
+        make_tx("t3", "c", "h", timestamp(2)),
+    ])
+    assert [r["riskScore"] for r in with_empty] == [r["riskScore"] for r in anonymous]
+
+
+def test_reset_clears_identity_state():
+    reset()
+    post_transactions([
+        make_tx("t1", "m", "a", timestamp(0), ipAddress="10.0.0.1"),
+    ])
+    reset()
+    # After reset the same identity is seen for the first time again.
+    results = post_transactions([
+        make_tx("t2", "c", "h", timestamp(1), ipAddress="10.0.0.1"),
+    ])
+    assert results[0]["riskScore"] == 0.0
