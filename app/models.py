@@ -90,26 +90,6 @@ class MoveResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class HealthResponse(BaseModel):
-    status: str = Field(..., description="Current health status of the API")
-    version: str = Field(..., description="API version")
-
-
-class HelloRequest(BaseModel):
-    name: str = Field(..., min_length=1, max_length=50, description="Name to greet")
-
-    @field_validator("name")
-    @classmethod
-    def name_must_not_contain_numbers(cls, v: str) -> str:
-        if any(char.isdigit() for char in v):
-            raise ValueError("Name must not contain numbers")
-        return v.strip()
-
-
-class HelloResponse(BaseModel):
-    greeting: str = Field(..., description="Greeting message")
-
-
 class SolveRequest(BaseModel):
     payload: str = Field(..., description="Base64 encoded payload")
 
@@ -122,8 +102,8 @@ class AdaptOutput(BaseModel):
 
 
 class SloOutput(BaseModel):
-    availability: float = 0.0
-    p95LatencyMs: int = 0
+    availability: float
+    p95LatencyMs: int
 
 
 class SolveResponse(BaseModel):
@@ -149,25 +129,23 @@ class AdaptInputInner(BaseModel):
 class Heartbeat(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    service: str = ""
-    timestamp: int = 0
-    latencyMs: int = 0
-    status: str = ""
+    service: str
+    timestamp: int
+    latencyMs: int
+    status: str
 
 
 class SloQuery(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    service: str = ""
-    since: int = 0
+    service: str
+    since: int
 
 
 class DecodedPayload(BaseModel):
     adaptInput: AdaptInputInner
     heartbeats: list[Heartbeat] = Field(default_factory=list)
     sloQuery: SloQuery | None = None
-
-
 # ---------------------------------------------------------------------------
 # Ghost Chains challenge models
 # ---------------------------------------------------------------------------
