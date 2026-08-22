@@ -1,7 +1,14 @@
-from fastapi import APIRouter
-from app.models import HelloRequest, MoveRequest, MoveResponse
-from fastapi import FastAPI, HTTPException, Request, status
+import base64
+import json
 
+from fastapi import APIRouter, HTTPException, status
+
+from app.models import (
+    AdaptOutput,
+    DecodedPayload,
+    SolveRequest,
+    SolveResponse,
+)
 
 router = APIRouter()
 
@@ -32,6 +39,7 @@ def _decode_payload(raw: str) -> dict:
 
     raise ValueError("payload is not valid base64-encoded JSON")
 
+
 @router.post("/solve", response_model=SolveResponse)
 async def solve_challenge(request: SolveRequest):
     try:
@@ -39,7 +47,7 @@ async def solve_challenge(request: SolveRequest):
     except ValueError:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid base64 payload or non-JSON content"
+            detail="Invalid base64 payload or non-JSON content",
         )
 
     try:
@@ -47,7 +55,7 @@ async def solve_challenge(request: SolveRequest):
     except (ValueError, TypeError) as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid payload structure: {e!s}"
+            detail=f"Invalid payload structure: {e!s}",
         )
 
     adapt_input = decoded_payload.adaptInput
@@ -58,8 +66,7 @@ async def solve_challenge(request: SolveRequest):
         id=adapt_input.user.id,
         name=adapt_input.user.fullName,
         action=adapt_input.action.lower(),
-        priority=priority_val
+        priority=priority_val,
     )
 
     return SolveResponse(adaptOutput=output)
-

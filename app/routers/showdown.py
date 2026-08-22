@@ -1,10 +1,10 @@
 from fastapi import APIRouter
-from app.models import HelloRequest, MoveRequest, MoveResponse
-from fastapi import FastAPI, HTTPException, Request, status
+
+from app.models import MoveRequest, MoveResponse
 from app.strategy import choose_action
 
 router = APIRouter()
-    
+
 
 @router.post("/move", response_model=MoveResponse, response_model_exclude_none=True)
 async def showdown_move(request: MoveRequest):

@@ -1,5 +1,3 @@
-import apigateway.py as apigateway
-import showdown.py as showdown
+from . import apigateway, ghost_chains, showdown
 
-
-routers = [apigateway.router, showdown.router]
+routers = [apigateway.router, showdown.router, ghost_chains.router]
