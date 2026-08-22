@@ -60,7 +60,7 @@ def test_mcp_tools_list():
     assert response.status_code == 200
     tools = response.json()["result"]["tools"]
     names = {tool["name"] for tool in tools}
-    assert names == {"get_name", "calculate", "classify_shape", "recall", "navigate"}
+    assert names == {"get_name", "calculate", "classify_shape", "recall", "retrieve", "navigate"}
 
 
 def test_mcp_get_name():
@@ -150,14 +150,41 @@ def test_mcp_recall_returns_json_array_of_strings():
     assert any("14 March" in chunk for chunk in chunks)
 
 
-def test_mcp_recall_missing_materials_is_error():
+def test_mcp_recall_without_materials_uses_challenge_set(monkeypatch):
+    from app import mcp_server
+
+    monkeypatch.setattr(
+        mcp_server,
+        "recall",
+        lambda question, materials=None: ["The library is on the east side of campus."],
+    )
     response = rpc(
         "tools/call",
         {"name": "recall", "arguments": {"question": "Where is the library?"}},
     )
+    assert response.status_code == 200
     result = response.json()["result"]
-    assert result["isError"] is True
-    assert "materials" in result["content"][0]["text"]
+    assert result["isError"] is False
+    chunks = json.loads(result["content"][0]["text"])
+    assert chunks == ["The library is on the east side of campus."]
+
+
+def test_mcp_retrieve_is_recall_alias():
+    response = rpc(
+        "tools/call",
+        {
+            "name": "retrieve",
+            "arguments": {
+                "question": "When was the sensor grid last brought back into alignment?",
+                "materials": "The sensor grid was last brought back into alignment on 14 March.",
+            },
+        },
+    )
+    assert response.status_code == 200
+    result = response.json()["result"]
+    assert result["isError"] is False
+    chunks = json.loads(result["content"][0]["text"])
+    assert any("14 March" in chunk for chunk in chunks)
 
 
 def test_mcp_navigate_returns_next_node():

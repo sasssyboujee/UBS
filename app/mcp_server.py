@@ -21,7 +21,7 @@ from typing import Any
 
 from app.toolbox import ToolboxError, navigate, recall
 
-SERVER_INFO = {"name": "nursery-toolbox", "version": "2.0.0"}
+SERVER_INFO = {"name": "nursery-toolbox", "version": "2.0.1"}
 PROTOCOL_VERSION = "2025-03-26"
 BOT_NAME = "Nursery"
 
@@ -75,11 +75,12 @@ TOOLS: list[dict[str, Any]] = [
         "description": (
             "Search the study materials and return the passages needed to answer the "
             "question(s). The result is a JSON array of strings (at most 900 o200k_base "
-            "tokens in total). It is cached for the whole attempt, so if you have several "
-            "questions, pass them all in one call. 'materials' accepts: a URL to the "
-            "study-material index or a single document; a JSON array of URLs or document "
-            "objects ({title, url} or {title, text}); or a JSON object mapping titles to "
-            "URLs or text."
+            "tokens in total). The official study materials are fetched automatically, "
+            "so you only need to pass the question. If you have several questions, pass "
+            "them all in one call. 'materials' is optional and may override the source: "
+            "a URL to the study-material index or a single document; a JSON array of URLs "
+            "or document objects ({title, url} or {title, text}); or a JSON object "
+            "mapping titles to URLs or text."
         ),
         "inputSchema": {
             "type": "object",
@@ -99,10 +100,37 @@ TOOLS: list[dict[str, Any]] = [
                 "materials": {
                     "type": ["string", "array", "object"],
                     "description": (
-                        "Study materials to search: a URL to the index/document, a JSON "
-                        "array of URLs or documents, or a JSON object mapping document "
-                        "titles to URLs or text."
+                        "Optional study materials to search. When omitted the official "
+                        "study set is fetched automatically."
                     ),
+                },
+            },
+            "required": ["question"],
+        },
+    },
+    {
+        "name": "retrieve",
+        "description": (
+            "Alias of recall: search the study materials and return the passages needed "
+            "to answer the question(s) as a JSON array of strings (at most 900 o200k_base "
+            "tokens in total). The official study materials are fetched automatically, "
+            "so you only need to pass the question."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "question": {
+                    "type": "string",
+                    "description": "The question(s) to find material for.",
+                },
+                "questions": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional list of questions (alternative to 'question').",
+                },
+                "materials": {
+                    "type": ["string", "array", "object"],
+                    "description": "Optional study materials to search; omitted means the official study set.",
                 },
             },
             "required": ["question"],
@@ -113,10 +141,10 @@ TOOLS: list[dict[str, Any]] = [
         "description": (
             "Return the next node to move to on the least-cost route to the destination. "
             "Cost = sum of edge weights + sum of entry tolls for every node entered. "
-            "The map is fetched from GET {base_url}/graph?map_id={map_id} unless the full "
-            "graph JSON is passed in 'graph'. Pass 'visited' (all nodes already visited on "
-            "this journey, including the current position) and 'hops_left' (edges still "
-            "allowed, including the next move) whenever the problem gives them."
+            "The map is fetched automatically from the challenge's graph service using "
+            "map_id - no other setup is needed. Pass 'visited' (all nodes already visited "
+            "on this journey, including the current position) and 'hops_left' (edges "
+            "still allowed, including the next move) whenever the problem gives them."
         ),
         "inputSchema": {
             "type": "object",
@@ -144,7 +172,7 @@ TOOLS: list[dict[str, Any]] = [
                 },
                 "base_url": {
                     "type": "string",
-                    "description": "Base URL of the /graph endpoint, e.g. https://challenge.example.com.",
+                    "description": "Optional override for the /graph endpoint host; normally not needed.",
                 },
                 "graph": {
                     "type": "object",
@@ -403,13 +431,18 @@ def _navigate_tool(arguments: dict[str, Any]) -> tuple[str, bool]:
     destination = _first(arguments, ["to", "to_node", "destination", "target"])
     if map_id is None or current is None or destination is None:
         return "Error: navigate requires map_id, from, and to arguments", True
+    visited = _first(arguments, ["visited", "visited_nodes", "seen", "path", "route"])
+    if isinstance(visited, str):
+        visited = [node.strip() for node in visited.split(",") if node.strip()]
     try:
         next_node, _path, _cost = navigate(
             map_id=str(map_id),
             current=str(current),
             destination=str(destination),
-            hops_left=_as_int(_first(arguments, ["hops_left", "hops", "remaining_hops", "allowance"])),
-            visited=arguments.get("visited") or [],
+            hops_left=_as_int(
+                _first(arguments, ["hops_left", "hops", "remaining_hops", "allowance", "moves_left"])
+            ),
+            visited=visited or [],
             base_url=_first(arguments, ["base_url", "host", "base"]),
             graph=_first(arguments, ["graph", "map_data", "data"]),
         )
@@ -426,7 +459,7 @@ def call_tool(name: str, arguments: dict[str, Any]) -> tuple[str, bool]:
         return _calculate(arguments)
     if name == "classify_shape":
         return _classify(arguments)
-    if name == "recall":
+    if name in ("recall", "retrieve"):
         return _recall_tool(arguments)
     if name == "navigate":
         return _navigate_tool(arguments)

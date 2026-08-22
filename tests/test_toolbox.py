@@ -100,7 +100,22 @@ def test_recall_accepts_json_materials_string():
     assert any("3 June" in chunk for chunk in chunks)
 
 
-def test_recall_without_materials_raises():
+def test_recall_without_materials_uses_challenge_index(monkeypatch):
+    fetched: list = []
+
+    def fake_fetch(materials):
+        fetched.append(materials)
+        return [{"title": "Log", "text": "The sensor grid was last brought back into alignment on 14 March."}]
+
+    monkeypatch.setattr(toolbox, "fetch_study_materials", fake_fetch)
+    chunks = recall("When was the sensor grid last brought back into alignment?")
+    assert chunks
+    assert any("14 March" in chunk for chunk in chunks)
+    assert fetched == [f"{toolbox.CHALLENGE_BASE_URL}{toolbox.STUDY_MATERIALS_INDEX}"]
+
+
+def test_recall_without_materials_and_without_base_raises(monkeypatch):
+    monkeypatch.setattr(toolbox, "CHALLENGE_BASE_URL", "")
     with pytest.raises(ToolboxError):
         recall("A question with no materials attached?", None)
 
@@ -203,8 +218,11 @@ def test_build_graph_url():
     assert build_graph_url("https://maps.example/graph?map_id=abc-123") == (
         "https://maps.example/graph?map_id=abc-123"
     )
-    with pytest.raises(ToolboxError):
-        build_graph_url("abc-123")
+    # Without a base_url the challenge's own graph service is used, because the
+    # android only ever hands over the opaque map_id.
+    assert build_graph_url("abc-123") == (
+        f"{toolbox.CHALLENGE_BASE_URL}/graph?map_id=abc-123"
+    )
 
 
 def test_navigate_with_graph_returns_next_node():
@@ -229,3 +247,21 @@ def test_navigate_fetches_graph_from_base_url(monkeypatch):
         base_url="https://maps.example",
     )
     assert next_node == "B"
+
+
+def test_navigate_fetches_graph_from_challenge_by_default(monkeypatch):
+    captured: dict[str, str] = {}
+
+    def fake_fetch(url, timeout):
+        captured["url"] = url
+        return json.dumps(EXAMPLE_GRAPH), "application/json"
+
+    monkeypatch.setattr(toolbox, "_fetch_text", fake_fetch)
+    next_node, _, _ = navigate(map_id="abc-123", current="A", destination="D")
+    assert next_node == "B"
+    assert captured["url"] == f"{toolbox.CHALLENGE_BASE_URL}/graph?map_id=abc-123"
+    # The map is cached: a second journey step must not hit the network again.
+    captured.clear()
+    next_node, _, _ = navigate(map_id="abc-123", current="B", destination="D")
+    assert next_node == "D"
+    assert not captured

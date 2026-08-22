@@ -343,3 +343,232 @@ def test_reset_clears_identity_state():
         make_tx("t2", "c", "h", timestamp(1), ipAddress="10.0.0.1"),
     ])
     assert results[0]["riskScore"] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Phase 1 edge cases - repeated edges, self-loops, ordering, temporal handling
+# ---------------------------------------------------------------------------
+
+
+def test_repeated_edge_scores_parallel_capacity_not_zero():
+    reset()
+    results = post_transactions([
+        make_tx("t1", "a", "b", timestamp(0)),
+        make_tx("t2", "a", "b", timestamp(1)),
+    ])
+    # A repeated transfer between the same pair adds parallel capacity and is
+    # more suspicious than an isolated first edge.
+    assert results[0]["riskScore"] == 0.0
+    assert results[1]["riskScore"] > 0.0
+
+
+def test_repeated_edge_does_not_reclose_cycle():
+    reset()
+    results = post_transactions([
+        make_tx("t1", "a", "b", timestamp(0)),
+        make_tx("t2", "b", "a", timestamp(1)),
+        make_tx("t3", "a", "b", timestamp(2)),
+    ])
+    # The third edge is a repeated edge inside an existing 2-cycle: it adds
+    # parallel capacity but does not re-close a loop, so it scores below the
+    # edge that first closed the cycle.
+    assert results[1]["riskScore"] > 0.5
+    assert 0.0 < results[2]["riskScore"] < results[1]["riskScore"]
+
+
+def test_self_loop_scores_as_cycle():
+    reset()
+    results = post_transactions([
+        make_tx("t1", "a", "a", timestamp(0)),
+    ])
+    # A transfer back to the same account is a degenerate return loop.
+    assert results[0]["riskScore"] > 0.0
+
+
+def test_self_loop_does_not_create_parallel_pairs():
+    reset()
+    results = post_transactions([
+        make_tx("t1", "a", "b", timestamp(0)),
+        make_tx("t2", "a", "a", timestamp(1)),
+    ])
+    # Self-loop after an outgoing edge: scored as a cycle, not as a fan-out.
+    assert results[1]["riskScore"] > 0.0
+    # It must not exceed the score of a genuine two-node return cycle.
+    reset()
+    cycle = post_transactions([
+        make_tx("t1", "a", "b", timestamp(0)),
+        make_tx("t2", "b", "a", timestamp(1)),
+    ])
+    assert results[1]["riskScore"] <= cycle[1]["riskScore"]
+
+
+def test_fan_out_and_fan_in_from_different_sources_are_not_structural_signals():
+    reset()
+    fan_out = post_transactions([
+        make_tx("t1", "a", "b", timestamp(0)),
+        make_tx("t2", "a", "c", timestamp(1)),
+    ])
+    # A single source paying two unrelated parties is ordinary flow.
+    assert fan_out[1]["riskScore"] == 0.0
+
+    reset()
+    fan_in = post_transactions([
+        make_tx("t1", "a", "s", timestamp(0)),
+        make_tx("t2", "b", "s", timestamp(1)),
+    ])
+    # Two unrelated sources paying the same party is ordinary flow.
+    assert fan_in[1]["riskScore"] == 0.0
+
+
+def test_chain_extension_grows_with_depth():
+    reset()
+    results = post_transactions([
+        make_tx("t1", "a", "b", timestamp(0)),
+        make_tx("t2", "b", "c", timestamp(1)),
+        make_tx("t3", "c", "d", timestamp(2)),
+        make_tx("t4", "d", "e", timestamp(3)),
+    ])
+    scores = [r["riskScore"] for r in results]
+    assert scores == sorted(scores)
+    assert scores[0] == 0.0
+    assert scores[-1] > scores[-2] > scores[-3]
+
+
+def test_batch_spanning_lookback_expires_mid_batch():
+    reset()
+    results = post_transactions([
+        make_tx("t1", "a", "b", timestamp(0)),
+        make_tx("t2", "b", "c", timestamp(1)),
+        make_tx("t3", "c", "d", timestamp(24 * 60 + 5)),
+    ])
+    # By t3 both earlier edges are older than 24h and must not influence it.
+    assert results[2]["riskScore"] == 0.0
+
+
+def test_out_of_order_stale_edge_does_not_enter_graph():
+    reset()
+    post_transactions([make_tx("t1", "a", "b", timestamp(100 * 60))])
+    results = post_transactions([
+        make_tx("t2", "b", "c", timestamp(0)),
+        make_tx("t3", "c", "b", timestamp(90 * 60)),
+    ])
+    # t2 is already older than 24h relative to the active window when it
+    # arrives, so it is scored but must not be inserted.  t3 therefore sees no
+    # edge from b to c and scores as an isolated new edge.
+    assert results[0]["riskScore"] > 0.0
+    assert results[1]["riskScore"] == 0.0
+
+
+def test_out_of_order_arrival_uses_current_state():
+    reset()
+    results = post_transactions([
+        make_tx("t1", "a", "b", timestamp(100 * 60)),
+        make_tx("t2", "b", "a", timestamp(0)),
+    ])
+    # t1 arrived first and is still inside the window, so t2 closes a cycle
+    # against the state available at its arrival.
+    assert results[0]["riskScore"] == 0.0
+    assert results[1]["riskScore"] > 0.5
+
+
+def test_lookback_boundary_with_seconds_precision():
+    reset()
+    post_transactions([make_tx("t1", "a", "b", timestamp(0))])
+    # Exactly 24h: active.
+    results = post_transactions([make_tx("t2", "b", "a", timestamp(24 * 60))])
+    assert results[0]["riskScore"] > 0.5
+
+    reset()
+    post_transactions([make_tx("t1", "a", "b", timestamp(0))])
+    # One second past 24h: expired.
+    late = datetime(2026, 6, 8, 12, 0, 0, tzinfo=UTC) + timedelta(
+        hours=24, seconds=1
+    )
+    results = post_transactions([
+        make_tx("t2", "b", "a", late.strftime("%Y-%m-%dT%H:%M:%SZ"))
+    ])
+    assert results[0]["riskScore"] == 0.0
+
+
+def test_timezone_offset_and_lowercase_z_are_parsed():
+    reset()
+    post_transactions([
+        make_tx("t1", "a", "b", "2026-06-08T20:00:00+08:00"),
+    ])
+    results = post_transactions([
+        make_tx("t2", "b", "a", "2026-06-09T11:59:00z"),
+    ])
+    # t1 = 2026-06-08T12:00Z, t2 = 2026-06-09T11:59Z (23h59m later): active.
+    assert results[0]["riskScore"] > 0.5
+
+
+def test_empty_batch_returns_empty_response():
+    reset()
+    results = post_transactions([])
+    assert results == []
+
+
+def test_reset_with_clear_transactions_false_keeps_state():
+    reset()
+    post_transactions([make_tx("t1", "a", "b", timestamp(0))])
+    response = client.post(
+        "/ghost-chains/reset", json={"clearTransactions": False}
+    )
+    assert response.status_code == 200
+    assert response.json() == {"clearTransactions": False}
+    # State was preserved: b -> a still closes a cycle.
+    results = post_transactions([make_tx("t2", "b", "a", timestamp(1))])
+    assert results[0]["riskScore"] > 0.5
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 identity edge cases
+# ---------------------------------------------------------------------------
+
+
+def test_identity_bridge_between_components_carrying_same_value():
+    reset()
+    bridging = post_transactions([
+        make_tx("t1", "m", "a", timestamp(0), ipAddress="10.0.0.1"),
+        make_tx("t2", "c", "h", timestamp(1), ipAddress="10.0.0.1"),
+        make_tx("t3", "a", "c", timestamp(2), ipAddress="10.0.0.1"),
+    ])
+    reset()
+    non_bridging = post_transactions([
+        make_tx("t1", "m", "a", timestamp(0), ipAddress="10.0.0.1"),
+        make_tx("t2", "c", "h", timestamp(1), ipAddress="10.0.0.1"),
+        make_tx("t3", "o", "s", timestamp(2), ipAddress="10.0.0.1"),
+    ])
+    # Bridging two components that already carry the same identity is stronger
+    # evidence than merely reusing the identity in a third component.
+    assert bridging[2]["riskScore"] > non_bridging[2]["riskScore"]
+
+
+def test_identity_shift_with_mixed_incoming_values_is_weighted_down():
+    reset()
+    single_flow_shift = post_transactions([
+        make_tx("t1", "m", "a", timestamp(0), deviceId="dev_i"),
+        make_tx("t2", "a", "c", timestamp(1), deviceId="dev_i"),
+        make_tx("t3", "c", "h", timestamp(2), deviceId="dev_k"),
+    ])
+    reset()
+    mixed_flow_shift = post_transactions([
+        make_tx("t1", "x", "c", timestamp(0), deviceId="dev_i"),
+        make_tx("t2", "y", "c", timestamp(1), deviceId="dev_j"),
+        make_tx("t3", "c", "h", timestamp(2), deviceId="dev_k"),
+    ])
+    # A shift after a single consistent incoming flow is a stronger anomaly
+    # than a shift after already-mixed incoming flows.
+    assert mixed_flow_shift[2]["riskScore"] > 0.0
+    assert mixed_flow_shift[2]["riskScore"] < single_flow_shift[2]["riskScore"]
+
+
+def test_repeated_edge_with_new_identity_counts_identity_signal():
+    reset()
+    results = post_transactions([
+        make_tx("t1", "m", "a", timestamp(0), deviceId="dev_i"),
+        make_tx("t2", "a", "c", timestamp(1), deviceId="dev_i"),
+        make_tx("t3", "a", "c", timestamp(2), deviceId="dev_other"),
+    ])
+    # Repeated structural edge but with a shifted device identity.
+    assert results[2]["riskScore"] > 0.0

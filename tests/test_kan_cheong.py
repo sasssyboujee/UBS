@@ -143,3 +143,117 @@ def test_start_equals_end():
     assert result["total_duration_sec"] == 0
     assert result["arrival_time"] == "2026-06-10T08:30:00Z"
     assert result["path"] == []
+
+
+def test_block_starts_mid_traversal_waits_on_edge():
+    """A blocking window that starts mid-edge makes you wait on the edge."""
+    case = {
+        "start_coordinate": [0, 0],
+        "end_coordinate": [1, 0],
+        "start_time": "2026-06-10T08:00:00Z",
+        "nodes": [[0, 0], [1, 0]],
+        "edges": [
+            {"edge_id": "edge_0", "node1": [0, 0], "node2": [1, 0], "base_duration_sec": 60},
+        ],
+        "obstructions": [
+            {
+                "edge_id": "edge_0",
+                "edge": {"from": [0, 0], "to": [1, 0]},
+                "start_time": "2026-06-10T08:00:30Z",
+                "end_time": "2026-06-10T08:00:40Z",
+                "speed_factor": 0.0,
+            },
+        ],
+    }
+    response = client.post("/kan-cheong-delivery-driver", json={"case": case})
+    assert response.status_code == 200
+    result = response.json()["case"]
+    assert result["total_duration_sec"] == 70
+    assert result["arrival_time"] == "2026-06-10T08:01:10Z"
+    assert result["path"] == ["edge_0"]
+
+
+def test_speed_up_obstruction():
+    """speed_factor > 1 shortens the traversal while the window is active."""
+    case = {
+        "start_coordinate": [0, 0],
+        "end_coordinate": [1, 0],
+        "start_time": "2026-06-10T08:00:00Z",
+        "nodes": [[0, 0], [1, 0]],
+        "edges": [
+            {"edge_id": "edge_0", "node1": [0, 0], "node2": [1, 0], "base_duration_sec": 10},
+        ],
+        "obstructions": [
+            {
+                "edge_id": "edge_0",
+                "edge": {"from": [0, 0], "to": [1, 0]},
+                "start_time": "2026-06-10T08:00:03Z",
+                "end_time": "2026-06-10T08:00:09Z",
+                "speed_factor": 2.0,
+            },
+        ],
+    }
+    response = client.post("/kan-cheong-delivery-driver", json={"case": case})
+    assert response.status_code == 200
+    result = response.json()["case"]
+    # 3s at normal speed covers 0.3 of the edge; the remaining 0.7 at 2x needs 3.5s.
+    assert result["total_duration_sec"] == 6.5
+    assert result["arrival_time"] == "2026-06-10T08:00:06.500000Z"
+
+
+def test_fractional_speed_factor_duration():
+    """Non-integral durations are returned as 6-dp floats with exact arrival."""
+    case = {
+        "start_coordinate": [0, 0],
+        "end_coordinate": [1, 0],
+        "start_time": "2026-06-10T08:00:00Z",
+        "nodes": [[0, 0], [1, 0]],
+        "edges": [
+            {"edge_id": "edge_0", "node1": [0, 0], "node2": [1, 0], "base_duration_sec": 10},
+        ],
+        "obstructions": [
+            {
+                "edge_id": "edge_0",
+                "edge": {"from": [0, 0], "to": [1, 0]},
+                "start_time": "2026-06-10T08:00:00Z",
+                "end_time": "2026-06-10T08:01:00Z",
+                "speed_factor": 0.3,
+            },
+        ],
+    }
+    response = client.post("/kan-cheong-delivery-driver", json={"case": case})
+    assert response.status_code == 200
+    result = response.json()["case"]
+    assert result["total_duration_sec"] == 33.333333
+    assert result["arrival_time"] == "2026-06-10T08:00:33.333333Z"
+
+
+def test_later_arrival_at_node_can_be_required():
+    """A later arrival at a revisited node can be strictly better."""
+    case = {
+        "start_coordinate": [0, 0],
+        "end_coordinate": [2, 0],
+        "start_time": "2026-06-10T08:00:00Z",
+        "nodes": [[0, 0], [0, 1], [1, 0], [2, 0]],
+        "edges": [
+            {"edge_id": "a", "node1": [0, 0], "node2": [0, 1], "base_duration_sec": 5},
+            {"edge_id": "b", "node1": [0, 0], "node2": [1, 0], "base_duration_sec": 10},
+            {"edge_id": "c", "node1": [1, 0], "node2": [2, 0], "base_duration_sec": 10},
+            {"edge_id": "d", "node1": [0, 0], "node2": [2, 0], "base_duration_sec": 60},
+        ],
+        "obstructions": [
+            {
+                "edge_id": "c",
+                "edge": {"from": [1, 0], "to": [2, 0]},
+                "start_time": "2026-06-10T08:00:10Z",
+                "end_time": "2026-06-10T08:00:20Z",
+                "speed_factor": 0.0,
+            },
+        ],
+    }
+    response = client.post("/kan-cheong-delivery-driver", json={"case": case})
+    assert response.status_code == 200
+    result = response.json()["case"]
+    # Loop a-a (10s) then b (10s) reaches [1,0] at 08:00:20 when c clears.
+    assert result["total_duration_sec"] == 30
+    assert result["path"] == ["a", "a", "b", "c"]
