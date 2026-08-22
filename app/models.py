@@ -163,6 +163,8 @@ class DecodedPayload(BaseModel):
     adaptInput: AdaptInputInner
     heartbeats: list[Heartbeat] = Field(default_factory=list)
     sloQuery: SloQuery | None = None
+
+
 # ---------------------------------------------------------------------------
 # Ghost Chains challenge models
 # ---------------------------------------------------------------------------
