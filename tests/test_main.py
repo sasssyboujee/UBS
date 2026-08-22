@@ -147,7 +147,7 @@ def solve_phase2(inner):
     return client.post("/solve", json={"payload": encoded})
 
 
-def test_solve_phase2_filters_by_since_not_service():
+def test_solve_phase2_filters_by_service_and_since():
     inner = phase2_inner_payload(
         heartbeats=[
             {"service": "auth", "timestamp": 1710000123, "latencyMs": 120, "status": "OK"},
@@ -157,9 +157,8 @@ def test_solve_phase2_filters_by_since_not_service():
     )
     response = solve_phase2(inner)
     assert response.status_code == 200
-    # Window: every heartbeat at/after `since` (boundary inclusive), all
-    # services included — the grader ignores the service field.
-    assert response.json()["sloOutput"] == {"availability": 1.0, "p95LatencyMs": 999}
+    # Window: only the auth heartbeat at exactly `since` (boundary inclusive).
+    assert response.json()["sloOutput"] == {"availability": 1.0, "p95LatencyMs": 120}
 
 
 def test_solve_phase2_empty_window_returns_zero_slo():
@@ -174,17 +173,16 @@ def test_solve_phase2_empty_window_returns_zero_slo():
     assert response.json()["sloOutput"] == {"availability": 0.0, "p95LatencyMs": 0}
 
 
-def test_solve_phase2_p95_is_max_of_window():
-    # 20 heartbeats would give 19 under nearest-rank; the grader expects the
-    # max (20) — reverse-engineered from the hidden-case scores.
+def test_solve_phase2_p95_uses_nearest_rank():
     heartbeats = [
         {"service": "auth", "timestamp": 1710000123 + i, "latencyMs": i + 1, "status": "OK"}
-        for i in range(20)
+        for i in range(10)
     ]
     inner = phase2_inner_payload(heartbeats=heartbeats)
     response = solve_phase2(inner)
     assert response.status_code == 200
-    assert response.json()["sloOutput"] == {"availability": 1.0, "p95LatencyMs": 20}
+    # Sorted latencies 1..10, nearest-rank p95 index ceil(0.95*10)-1 = 9 -> 10.
+    assert response.json()["sloOutput"] == {"availability": 1.0, "p95LatencyMs": 10}
 
 
 def test_solve_phase2_availability_is_fraction_of_window():

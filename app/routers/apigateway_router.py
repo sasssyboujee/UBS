@@ -1,6 +1,7 @@
 import base64
 import json
 import logging
+import math
 from collections import deque
 from datetime import UTC, datetime
 
@@ -109,14 +110,13 @@ def _compute_slo(
     if slo_query is None:
         window = heartbeats
     else:
-        # Grader semantics (reverse-engineered from scores + guide sample):
-        # the SLO window is every heartbeat at/after `since`, regardless of
-        # service. Filtering by `sloQuery.service` as well scores 60/300
-        # instead of full marks on the hidden case.
+        # Guide semantics: the SLO window is the queried service's heartbeats
+        # at/after `since` (boundary inclusive).
         window = [
             hb
             for hb in heartbeats
-            if hb.timestamp >= slo_query.since
+            if hb.service == slo_query.service
+            and hb.timestamp >= slo_query.since
         ]
 
     if not window:
@@ -133,15 +133,14 @@ def _compute_slo(
     )
 
     availability = ok_count / len(window)
-    # P95: the grader's reference returns the worst (max) latency in the
-    # window for this challenge (the guide's sample n=2 cannot distinguish
-    # max from nearest-rank; the hidden case can, and max is what scores).
+    # P95: nearest-rank percentile (ceil(0.95*n)-1, 0-based).
     latencies = sorted(
         hb.latencyMs
         for hb in window
     )
 
-    p95_latency = latencies[-1]
+    index = math.ceil(0.95 * len(latencies)) - 1
+    p95_latency = latencies[index]
 
     return SloOutput(
         availability=availability,
