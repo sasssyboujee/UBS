@@ -116,9 +116,10 @@ def _compute_slo(
         for hb in window
     )
 
-    index = int(0.95 * len(latencies))
+    index = math.floor(0.95 * (len(latencies) - 1))
     p95_latency = latencies[index]
-    
+
+
     return SloOutput(
         availability=availability,
         p95LatencyMs=p95_latency,
