@@ -1,6 +1,8 @@
 from app.models import HandResult, MoveRequest
 from app.strategy import (
     _codename_observations,
+    _post_reveal_opp_weights,
+    _post_reveal_opp_weights_observed,
     _record_recent_hands,
     _reset_learning,
     _rule_showdown,
@@ -311,3 +313,51 @@ def test_recent_hands_dedupe_without_hand_numbers():
     )
     _record_recent_hands(request)
     assert _codename_observations("nohand_rule") == 1
+
+
+def test_pairwise_exact_recall_with_single_observation():
+    _reset_learning()
+    hand = HandResult(
+        hand_number=1,
+        community_number=7,
+        winners=[0],
+        shown_numbers={"you": 2, "opp": 13},
+    )
+    request = MoveRequest(
+        match_id="pair-match",
+        table_rule="pair_rule",
+        leg_number=1,
+        total_legs=4,
+        your_seat=0,
+        button_seat=1,
+        recent_hands=[hand],
+    )
+    _record_recent_hands(request)
+    assert _codename_observations("pair_rule") == 1
+    # The exact observed matchup is recalled even with a single observation.
+    assert _rule_showdown(2, 13, 7, "pair_rule") == 1.0
+    assert _rule_showdown(13, 2, 7, "pair_rule") == 0.0
+
+
+def test_opponent_range_learned_from_showdowns():
+    _reset_learning()
+    hand = HandResult(
+        hand_number=1,
+        community_number=7,
+        winners=[0],
+        shown_numbers={"you": 10, "opp": 4},
+        actions=[{"round": "post_reveal", "seat": 1, "action": "bet", "amount": 5}],
+    )
+    request = MoveRequest(
+        match_id="opp-range-match",
+        table_rule="opp_range_rule",
+        leg_number=1,
+        total_legs=4,
+        your_seat=0,
+        button_seat=1,
+        recent_hands=[hand],
+    )
+    _record_recent_hands(request)
+    observed = _post_reveal_opp_weights_observed(7, raised=False)
+    standard = _post_reveal_opp_weights(7, raised=False, codename="standard")
+    assert observed[4] > standard[4]

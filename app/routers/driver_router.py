@@ -407,7 +407,7 @@ def solve_case(case):
     # result in them. The expected API uses seconds, so preserve an
     # integer when numerically integral.
     if abs(total_duration - round(total_duration)) < 1e-9:
-        total_duration = int(round(total_duration))
+        total_duration = round(total_duration)
     else:
         total_duration = round(total_duration, 6)
 

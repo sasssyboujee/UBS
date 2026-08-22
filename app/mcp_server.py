@@ -19,7 +19,9 @@ import base64
 import json
 from typing import Any
 
-SERVER_INFO = {"name": "nursery-toolbox", "version": "1.0.0"}
+from app.toolbox import ToolboxError, navigate, recall
+
+SERVER_INFO = {"name": "nursery-toolbox", "version": "2.0.0"}
 PROTOCOL_VERSION = "2025-03-26"
 BOT_NAME = "Nursery"
 
@@ -66,6 +68,90 @@ TOOLS: list[dict[str, Any]] = [
                 },
             },
             "required": ["image"],
+        },
+    },
+    {
+        "name": "recall",
+        "description": (
+            "Search the study materials and return the passages needed to answer the "
+            "question(s). The result is a JSON array of strings (at most 900 o200k_base "
+            "tokens in total). It is cached for the whole attempt, so if you have several "
+            "questions, pass them all in one call. 'materials' accepts: a URL to the "
+            "study-material index or a single document; a JSON array of URLs or document "
+            "objects ({title, url} or {title, text}); or a JSON object mapping titles to "
+            "URLs or text."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "question": {
+                    "type": "string",
+                    "description": (
+                        "The question(s) to find material for. If there are several "
+                        "questions, join them into one string so nothing is missed."
+                    ),
+                },
+                "questions": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional list of questions (alternative to 'question').",
+                },
+                "materials": {
+                    "type": ["string", "array", "object"],
+                    "description": (
+                        "Study materials to search: a URL to the index/document, a JSON "
+                        "array of URLs or documents, or a JSON object mapping document "
+                        "titles to URLs or text."
+                    ),
+                },
+            },
+            "required": ["question"],
+        },
+    },
+    {
+        "name": "navigate",
+        "description": (
+            "Return the next node to move to on the least-cost route to the destination. "
+            "Cost = sum of edge weights + sum of entry tolls for every node entered. "
+            "The map is fetched from GET {base_url}/graph?map_id={map_id} unless the full "
+            "graph JSON is passed in 'graph'. Pass 'visited' (all nodes already visited on "
+            "this journey, including the current position) and 'hops_left' (edges still "
+            "allowed, including the next move) whenever the problem gives them."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "map_id": {
+                    "type": "string",
+                    "description": "The map_id from the question, or a full URL to the graph endpoint.",
+                },
+                "from": {
+                    "type": "string",
+                    "description": "Current node label.",
+                },
+                "to": {
+                    "type": "string",
+                    "description": "Destination node label.",
+                },
+                "hops_left": {
+                    "type": "integer",
+                    "description": "Number of edges still allowed on this journey, including the next move.",
+                },
+                "visited": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Nodes already visited on this journey, including the current position.",
+                },
+                "base_url": {
+                    "type": "string",
+                    "description": "Base URL of the /graph endpoint, e.g. https://challenge.example.com.",
+                },
+                "graph": {
+                    "type": "object",
+                    "description": "Optional: the map JSON {'adjacency': {...}, 'tolls': {...}} if already known.",
+                },
+            },
+            "required": ["map_id", "from", "to"],
         },
     },
 ]
@@ -284,6 +370,54 @@ def _classify(arguments: dict[str, Any]) -> tuple[str, bool]:
     return shape, False
 
 
+def _first(arguments: dict[str, Any], keys: list[str]) -> Any:
+    for key in keys:
+        value = arguments.get(key)
+        if value is not None and value != "":
+            return value
+    return None
+
+
+def _as_int(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _recall_tool(arguments: dict[str, Any]) -> tuple[str, bool]:
+    question = _first(arguments, ["question", "questions", "query"])
+    materials = _first(arguments, ["materials", "documents", "sources", "url", "urls"])
+    try:
+        chunks = recall(question if question is not None else "", materials)
+    except ToolboxError as exc:
+        return f"Error: {exc}", True
+    return json.dumps(chunks, ensure_ascii=False), False
+
+
+def _navigate_tool(arguments: dict[str, Any]) -> tuple[str, bool]:
+    map_id = _first(arguments, ["map_id", "map", "graph_id"])
+    current = _first(arguments, ["from", "from_node", "current", "source", "position", "at"])
+    destination = _first(arguments, ["to", "to_node", "destination", "target"])
+    if map_id is None or current is None or destination is None:
+        return "Error: navigate requires map_id, from, and to arguments", True
+    try:
+        next_node, _path, _cost = navigate(
+            map_id=str(map_id),
+            current=str(current),
+            destination=str(destination),
+            hops_left=_as_int(_first(arguments, ["hops_left", "hops", "remaining_hops", "allowance"])),
+            visited=arguments.get("visited") or [],
+            base_url=_first(arguments, ["base_url", "host", "base"]),
+            graph=_first(arguments, ["graph", "map_data", "data"]),
+        )
+    except ToolboxError as exc:
+        return f"Error: {exc}", True
+    return str(next_node), False
+
+
 def call_tool(name: str, arguments: dict[str, Any]) -> tuple[str, bool]:
     """Execute a tool and return (text, is_error)."""
     if name == "get_name":
@@ -292,6 +426,10 @@ def call_tool(name: str, arguments: dict[str, Any]) -> tuple[str, bool]:
         return _calculate(arguments)
     if name == "classify_shape":
         return _classify(arguments)
+    if name == "recall":
+        return _recall_tool(arguments)
+    if name == "navigate":
+        return _navigate_tool(arguments)
     return f"Error: unknown tool {name!r}", True
 
 

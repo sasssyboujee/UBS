@@ -1,8 +1,7 @@
-import json
 import heapq
 import itertools
 import math
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 EPS = 1e-9

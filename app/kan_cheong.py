@@ -113,8 +113,7 @@ def travel_time(
         return t
 
     idx = bisect_right(starts, t) - 1
-    if idx < 0:
-        idx = 0
+    idx = max(idx, 0)
 
     if factors[idx] == 0.0:
         return None
@@ -125,8 +124,7 @@ def travel_time(
     while idx < n_segs:
         factor = factors[idx]
         end = ends[idx]
-        if cur < starts[idx]:
-            cur = starts[idx]
+        cur = max(cur, starts[idx])
         if factor == 0.0:
             # Blocked mid-traversal: no progress until this window ends.
             cur = end
@@ -308,8 +306,7 @@ def _solve_case(case: dict[str, Any]) -> dict[str, Any]:
 
     for arc_windows in windows:
         for _, end, _ in arc_windows:
-            if end > max_obs_end:
-                max_obs_end = end
+            max_obs_end = max(max_obs_end, end)
 
     # ------------------------------------------------------------
     # Regimes at each node.
@@ -462,18 +459,10 @@ def _solve_case(case: dict[str, Any]) -> dict[str, Any]:
         #
         # If we're already after the final obstruction, the graph
         # is static. Therefore the remaining optimal path is simply
-        # static_dist[u].
+        # static_dist[u]. We don't need to do anything special here:
+        # normal edge relaxation below reconstructs the static suffix
+        # while preserving parent information for the actual path.
         # --------------------------------------------------------
-
-        if t >= max_obs_end and static_dist[u] < INF:
-            final_time = t + static_dist[u]
-
-            # Reconstructing the static suffix is handled below
-            # by simply continuing normal edge relaxation.
-            #
-            # We don't terminate here because we still need parent
-            # information for the actual path.
-            pass
 
         # --------------------------------------------------------
         # Normal edge traversal

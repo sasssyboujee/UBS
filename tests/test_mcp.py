@@ -1,4 +1,5 @@
 import base64
+import json
 
 import cv2
 import numpy as np
@@ -59,7 +60,7 @@ def test_mcp_tools_list():
     assert response.status_code == 200
     tools = response.json()["result"]["tools"]
     names = {tool["name"] for tool in tools}
-    assert names == {"get_name", "calculate", "classify_shape"}
+    assert names == {"get_name", "calculate", "classify_shape", "recall", "navigate"}
 
 
 def test_mcp_get_name():
@@ -127,6 +128,61 @@ def test_mcp_classify_sample_square_as_rectangle():
     response = rpc("tools/call", {"name": "classify_shape", "arguments": {"image": sample}})
     assert response.status_code == 200
     assert tool_result(response) == "rectangle"
+
+
+def test_mcp_recall_returns_json_array_of_strings():
+    response = rpc(
+        "tools/call",
+        {
+            "name": "recall",
+            "arguments": {
+                "question": "When was the sensor grid last brought back into alignment?",
+                "materials": "The sensor grid was last brought back into alignment on 14 March.",
+            },
+        },
+    )
+    assert response.status_code == 200
+    result = response.json()["result"]
+    assert result["isError"] is False
+    chunks = json.loads(result["content"][0]["text"])
+    assert isinstance(chunks, list)
+    assert all(isinstance(chunk, str) for chunk in chunks)
+    assert any("14 March" in chunk for chunk in chunks)
+
+
+def test_mcp_recall_missing_materials_is_error():
+    response = rpc(
+        "tools/call",
+        {"name": "recall", "arguments": {"question": "Where is the library?"}},
+    )
+    result = response.json()["result"]
+    assert result["isError"] is True
+    assert "materials" in result["content"][0]["text"]
+
+
+def test_mcp_navigate_returns_next_node():
+    graph = {
+        "adjacency": {"A": {"B": 4.0, "C": 2.0}, "B": {"D": 3.0}, "C": {"D": 2.0}},
+        "tolls": {"A": 5.0, "B": 1.0, "C": 9.0, "D": 2.0},
+    }
+    response = rpc(
+        "tools/call",
+        {
+            "name": "navigate",
+            "arguments": {"map_id": "x", "from": "A", "to": "D", "graph": graph},
+        },
+    )
+    assert response.status_code == 200
+    result = response.json()["result"]
+    assert result["isError"] is False
+    assert result["content"][0]["text"] == "B"
+
+
+def test_mcp_navigate_missing_args_is_error():
+    response = rpc("tools/call", {"name": "navigate", "arguments": {"map_id": "x"}})
+    result = response.json()["result"]
+    assert result["isError"] is True
+    assert "map_id" in result["content"][0]["text"]
 
 
 def test_mcp_unknown_method_returns_jsonrpc_error():
