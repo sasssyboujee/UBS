@@ -1187,6 +1187,29 @@ def choose_action(req: MoveRequest) -> MoveResponse:
 
     codename = req.table_rule or "standard"
 
+    if req.phase >= 2 or codename != "standard" or len(req.players) > 2:
+        delta = _our_chip_delta(req)
+        # Below safe threshold: play degen
+        if delta < 75:
+            card = req.your_number or 1
+            community = req.community_number
+            is_good = card >= 10 or (community is not None and card == community)
+            
+            target = req.max_raise_to if req.max_raise_to is not None else (req.your_stack or 0)
+            
+            if is_good or _chance(req, "degen_flip", 50):
+                if "raise" in legal:
+                    return _legalize(MoveResponse(action="raise", amount=target), req, legal)
+                if "bet" in legal:
+                    return _legalize(MoveResponse(action="bet", amount=target), req, legal)
+                if "call" in legal:
+                    return _legalize(MoveResponse(action="call"), req, legal)
+            else:
+                if (req.to_call or 0) == 0 and "check" in legal:
+                    return _legalize(MoveResponse(action="check"), req, legal)
+                if "fold" in legal:
+                    return _legalize(MoveResponse(action="fold"), req, legal)
+
     if req.phase >= 3 or len(req.players) > 2:
         resp = _phase3_move(req, legal, codename)
         return _legalize(resp, req, legal)
