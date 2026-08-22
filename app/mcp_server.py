@@ -415,14 +415,14 @@ def _as_int(value: Any) -> int | None:
         return None
 
 
-def _recall_tool(arguments: dict[str, Any]) -> tuple[str, bool]:
+def _recall_tool(arguments: dict[str, Any]) -> tuple[list[str] | str, bool]:
     question = _first(arguments, ["question", "questions", "query"])
     materials = _first(arguments, ["materials", "documents", "sources", "url", "urls"])
     try:
         chunks = recall(question if question is not None else "", materials)
     except ToolboxError as exc:
         return f"Error: {exc}", True
-    return json.dumps(chunks, ensure_ascii=False), False
+    return chunks, False
 
 
 def _navigate_tool(arguments: dict[str, Any]) -> tuple[str, bool]:
@@ -451,8 +451,8 @@ def _navigate_tool(arguments: dict[str, Any]) -> tuple[str, bool]:
     return str(next_node), False
 
 
-def call_tool(name: str, arguments: dict[str, Any]) -> tuple[str, bool]:
-    """Execute a tool and return (text, is_error)."""
+def call_tool(name: str, arguments: dict[str, Any]) -> tuple[str | list[str], bool]:
+    """Execute a tool and return (result, is_error)."""
     if name == "get_name":
         return BOT_NAME, False
     if name == "calculate":
@@ -498,10 +498,16 @@ def handle_rpc_message(msg: dict[str, Any]) -> dict[str, Any] | None:
         arguments = params.get("arguments") or {}
         if not isinstance(arguments, dict):
             return _err(msg_id, -32602, "arguments must be an object")
-        text, is_error = call_tool(name, arguments)
+        
+        result_data, is_error = call_tool(name, arguments)
+        if isinstance(result_data, list):
+            content = [{"type": "text", "text": str(chunk)} for chunk in result_data]
+        else:
+            content = [{"type": "text", "text": str(result_data)}]
+            
         return _ok(
             msg_id,
-            {"content": [{"type": "text", "text": text}], "isError": is_error},
+            {"content": content, "isError": is_error},
         )
     if method == "resources/list":
         return _ok(msg_id, {"resources": []})
