@@ -476,6 +476,10 @@ _QUERY_EXPANSIONS: dict[str, set[str]] = {
     "station": {"stop", "depot", "terminal", "platform"},
     "journey": {"trip", "rout", "travel"},
     "city": {"town", "district", "campus"},
+    # "air-scrubbing equipment broke down" -> "oxygen scrubber failure"
+    "scrubb": {"scrubber", "oxygen", "filtrat", "filter", "purifi", "ventil"},
+    "break": {"fail", "failur", "malfunct", "broke", "breakdown", "collaps"},
+    "equip": {"machin", "apparatus", "gear", "device", "unit", "instrument"},
 }
 
 
@@ -597,48 +601,25 @@ def _select_passages(
         used += tokens
         return True
 
-    # Dominance: when the top document stands clearly above the runner-up the
-    # question is almost certainly about that one document, so the whole budget
-    # goes there. Otherwise the strongest documents share it.
-    top_strength = doc_strength.get(doc_order[0], 0.0)
-    second_strength = doc_strength.get(doc_order[1], 0.0) if len(doc_order) > 1 else 0.0
-    dominant = top_strength > 0 and (second_strength <= 0 or top_strength >= 1.4 * second_strength)
-
-    if dominant:
-        for score, _, text in per_doc.get(doc_order[0], []):
-            if score <= 0:
-                continue
-            add(text)
-            if used >= budget:
-                return selected
-        return selected
-
-    # 1) The best passage of every matching document, strongest doc first.
-    for doc_id in doc_order:
+    # 1) The best passage of the top TWO documents. The top document covers
+    #    the clearly-routed case; the runner-up covers the close call where the
+    #    right document ranks second by a hair (an all-or-nothing dominance
+    #    switch misroutes those questions).
+    for doc_id in doc_order[:2]:
         entries = per_doc.get(doc_id, [])
         if entries and entries[0][0] > 0:
             add(entries[0][2])
 
-    # 2) Interleave the remaining passages across documents, giving the
-    #    strongest document two turns per cycle.
-    added = True
-    while added and used < budget:
-        added = False
-        for doc_id in doc_order:
-            for _ in range(2 if doc_id == doc_order[0] else 1):
-                entries = per_doc.get(doc_id, [])
-                if not entries:
-                    break
-                score, _, text = entries.pop(0)
-                if score <= 0:
-                    break
-                if add(text):
-                    added = True
-                if used >= budget:
-                    return selected
+    # 2) Fill the remaining budget with the top document's passages.
+    for score, _, text in per_doc.get(doc_order[0], []):
+        if score <= 0:
+            continue
+        add(text)
+        if used >= budget:
+            return selected
 
-    # 3) Fill whatever space remains, strongest document first.
-    for doc_id in doc_order:
+    # 3) Fill whatever space remains with the other documents.
+    for doc_id in doc_order[1:]:
         for _, _, text in per_doc.get(doc_id, []):
             add(text)
             if used >= budget:

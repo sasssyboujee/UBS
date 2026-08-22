@@ -92,6 +92,27 @@ def test_recall_respects_token_budget_on_large_corpus():
     assert any("14 March" in chunk for chunk in chunks)
 
 
+def test_recall_paraphrase_bridges_scrubber_failure():
+    """The material says "oxygen scrubber failure"; the question asks when the
+    "air-scrubbing equipment broke down". A decoy document with dates and
+    breaks must not crowd out the passage carrying the fact.
+    """
+    fact = (
+        "An oxygen scrubber failure occurred on 2 November, prompting an "
+        "emergency ventilation drill that cleared the affected module within "
+        "eleven minutes. Investigators later traced the failure to a corroded "
+        "valve seat."
+    )
+    decoy = (
+        "Drivers are required to take a mandatory break every shift block. The "
+        "fatigue study was adopted on 5 March. Board meetings run quarterly "
+        "and review performance metrics on a fixed schedule every 21 May."
+    )
+    materials = [{"title": "Station", "text": fact}, {"title": "Transit", "text": decoy}]
+    chunks = recall("On what date did the air-scrubbing equipment break down?", materials)
+    assert any("2 November" in chunk for chunk in chunks)
+
+
 def test_recall_accepts_json_materials_string():
     materials = json.dumps(
         [{"title": "Log", "text": "The reactor coolant was flushed on 3 June."}]
