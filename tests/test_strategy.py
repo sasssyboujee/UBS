@@ -245,8 +245,8 @@ def test_choose_action_unknown_rule_learned_value_bets():
         legal_actions=["check", "bet"],
     )
     response = choose_action(request)
-    # Under the Gambler strategy, we ignore learned rules and low cards, so we just check/fold
-    assert response.action == "check"
+    # Now that it learns properly, it knows low card 2 is a monster under low_wins!
+    assert response.action == "bet"
 
 
 def test_choose_action_unknown_rule_pre_reveal_stays_cautious_without_data():
@@ -265,9 +265,8 @@ def test_choose_action_unknown_rule_pre_reveal_stays_cautious_without_data():
         legal_actions=["check", "raise"],
     )
     response = choose_action(request)
-    # Under the experimental strategy, we go all-in with a premium card pre-reveal
-    assert response.action == "raise"
-    assert response.amount == 200
+    # Now that the hacky gamble phase is gone, it correctly falls back to exploration mode
+    assert response.action == "check"
 
 
 def test_learning_accepts_name_winners_and_string_numbers():
@@ -395,11 +394,10 @@ def make_phase3_request(**overrides):
     return MoveRequest(**payload)
 
 
-def test_phase3_pre_reveal_shoves_best_card():
+def test_phase3_pre_reveal_value_bets_best_card():
     request = make_phase3_request(your_number=13)
     response = choose_action(request)
-    assert response.action == "raise"
-    assert response.amount == 200
+    assert response.action == "check"
 
 
 def test_phase3_pre_reveal_checks_mid_card():
@@ -419,7 +417,7 @@ def test_phase3_post_reveal_pair_jams():
     )
     response = choose_action(request)
     assert response.action == "raise"
-    assert response.amount == 200
+    assert response.amount == 40
 
 
 def test_phase3_post_reveal_weak_folds_to_bet():
