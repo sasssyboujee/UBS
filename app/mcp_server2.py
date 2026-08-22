@@ -1,7 +1,7 @@
 import heapq
 import requests
 import tiktoken
-from mcp.server.fastmcp import FastMCP
+from fastmcp import FastMCP
 
 BASE_URL = "https://tool-box-2591eaa24fa3.herokuapp.com"
 TOKEN_ENCODING = tiktoken.get_encoding("o200k_base")
