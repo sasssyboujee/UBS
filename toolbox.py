@@ -37,7 +37,7 @@ _FETCH_BUDGET = 8.0        # overall wall-clock budget for fetching ALL docs in 
 
 _doc_cache: dict[str, str] = {}
 _graph_cache: dict[str, dict[str, Any]] = {}
-_visited_by_journey: dict[tuple[str, str], set[str]] = {}
+
 
 
 class ToolboxError(Exception):
@@ -239,24 +239,15 @@ def recall(question: Any, materials: Any = None) -> list[str]:
         key=lambda x: (-x[0], x[1]),
     )
 
-    selected: list[str] = []
-    used = 0
+    selected = []
+    # Return only the highest scoring chunk (if any)
     for score, tok, chunk in scored:
-        if score == 0:
-            continue
-        if used + tok > TOKEN_BUDGET:
-            continue
-        selected.append(chunk)
-        used += tok
-
-    if not selected and chunks:
-        # No term overlap anywhere — hand over something rather than nothing.
-        for tok, chunk in sorted(((_token_count(c), c) for c in chunks), key=lambda x: x[0]):
-            if used + tok > TOKEN_BUDGET:
-                break
+        if score > 0:
             selected.append(chunk)
-            used += tok
-
+            break
+    # If nothing matched, take the shortest chunk
+    if not selected and chunks:
+        selected.append(min(chunks, key=_token_count))
     return selected
 
 
@@ -319,42 +310,50 @@ def _dijkstra_next(adjacency: dict, tolls: dict, start: str, dest: str, forbidde
     return path[1] if len(path) > 1 else None
 
 
-def _bounded_next(
-    adjacency: dict, tolls: dict, start: str, dest: str, max_hops: int, forbidden: set[str]
-) -> str | None:
-    reach: list[dict[str, tuple[float, str | None]]] = [dict() for _ in range(max_hops + 1)]
-    reach[0][start] = (0.0, None)
-
+def _bounded_next(adjacency, tolls, start, dest, max_hops, forbidden):
+    # DP: reachable[h][node] = (cost, parent)
+    reachable = [dict() for _ in range(max_hops + 1)]
+    reachable[0][start] = (0.0, None)
+    
     for h in range(1, max_hops + 1):
-        reach[h] = dict(reach[h - 1])
-        for u, (cost_u, _) in reach[h - 1].items():
+        # start with the previous level's nodes (allow fewer hops)
+        reachable[h] = dict(reachable[h-1])
+        for u, (cost_u, _) in reachable[h-1].items():
             for v, w in adjacency.get(u, {}).items():
                 if v in forbidden and v != dest:
                     continue
                 new_cost = cost_u + w + tolls.get(v, 0.0)
-                if v not in reach[h] or new_cost < reach[h][v][0]:
-                    reach[h][v] = (new_cost, u)
-
-    best_h, best_cost = None, None
+                if v not in reachable[h] or new_cost < reachable[h][v][0]:
+                    reachable[h][v] = (new_cost, u)
+    
+    # Find best cost to destination across all hop counts
+    best_h = None
+    best_cost = None
     for h in range(max_hops + 1):
-        if dest in reach[h]:
-            cost = reach[h][dest][0]
+        if dest in reachable[h]:
+            cost = reachable[h][dest][0]
             if best_cost is None or cost < best_cost:
-                best_cost, best_h = cost, h
-
+                best_cost = cost
+                best_h = h
+    
     if best_h is None:
         return None
-
-    node, h = dest, best_h
-    path = [node]
+    
+    # Reconstruct path
+    path = []
+    node = dest
+    h = best_h
     while node != start:
-        prev_node = reach[h][node][1]
-        if prev_node == node:
+        parent = reachable[h][node][1]
+        if parent is None:
+            # This can happen if the node was carried over from previous level
+            # without moving. We need to go back one hop.
             h -= 1
             continue
-        node = prev_node
-        h -= 1
         path.append(node)
+        node = parent
+        h -= 1
+    path.append(start)
     path.reverse()
     return path[1] if len(path) > 1 else None
 
