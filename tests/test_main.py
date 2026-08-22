@@ -105,6 +105,107 @@ def test_solve_invalid_payload_returns_400():
     assert response.status_code == 400
 
 
+SAMPLE_PHASE2_PAYLOAD = (
+    "ewoJImFkYXB0SW5wdXQiOiB7CgkJInVzZXIiOiB7CgkJCSJpZCI6ICJVNDIiLAoJCQkiZnVsbE5hbWUiOiAiSmFuZSBEb2UiCgkJfSwKCQkiYWN0aW9uIjogIkNSRUFURSIsCgkJIm1ldGFkYXRhIjogewoJCQkicHJpb3JpdHkiOiAiSElHSCIKCQl9Cgl9LAoJImhlYXJ0YmVhdHMiOiBbCgkJewoJCQkic2VydmljZSI6ICJhdXRoIiwKCQkJInRpbWVzdGFtcCI6IDE3MTAwMDAxMjMsCgkJCSJsYXRlbmN5TXMiOiAxMjAsCgkJCSJzdGF0dXMiOiAiT0siCgkJfSwKCQl7CgkJCSJzZXJ2aWNlIjogImF1dGgiLAoJCQkidGltZXN0YW1wIjogMTcxMDAwMDEyNSwKCQkJImxhdGVuY3lNcyI6IDE4MCwKCQkJInN0YXR1cyI6ICJGQUlMIgoJCX0sCgkJewoJCQkic2VydmljZSI6ICJhdXRoIiwKCQkJInRpbWVzdGFtcCI6IDE3MTAwMDAxMjEsCgkJCSJsYXRlbmN5TXMiOiA5NSwKCQkJInN0YXR1cyI6ICJPSyIKCQl9CgldLAoJInNsb1F1ZXJ5IjogewoJCSJzZXJ2aWNlIjogImF1dGgiLAoJCSJzaW5jZSI6IDE3MTAwMDAxMjMKCX0KfQ=="
+)
+
+
+def test_solve_phase2_sample_from_guide():
+    response = client.post("/solve", json={"payload": SAMPLE_PHASE2_PAYLOAD})
+    assert response.status_code == 200
+    assert response.json() == {
+        "adaptOutput": {
+            "id": "U42",
+            "name": "Jane Doe",
+            "action": "create",
+            "priority": 3,
+        },
+        "sloOutput": {"availability": 0.5, "p95LatencyMs": 180},
+    }
+
+
+def phase2_inner_payload(**overrides):
+    inner = {
+        "adaptInput": {
+            "user": {"id": "U7", "fullName": "John Smith"},
+            "action": "UPDATE",
+            "metadata": {"priority": "MEDIUM"},
+        },
+        "heartbeats": [
+            {"service": "auth", "timestamp": 1710000123, "latencyMs": 120, "status": "OK"},
+            {"service": "auth", "timestamp": 1710000125, "latencyMs": 180, "status": "FAIL"},
+            {"service": "auth", "timestamp": 1710000121, "latencyMs": 95, "status": "OK"},
+        ],
+        "sloQuery": {"service": "auth", "since": 1710000123},
+    }
+    inner.update(overrides)
+    return inner
+
+
+def solve_phase2(inner):
+    encoded = base64.b64encode(json.dumps(inner).encode()).decode()
+    return client.post("/solve", json={"payload": encoded})
+
+
+def test_solve_phase2_filters_by_service_and_since():
+    inner = phase2_inner_payload(
+        heartbeats=[
+            {"service": "auth", "timestamp": 1710000123, "latencyMs": 120, "status": "OK"},
+            {"service": "db", "timestamp": 1710000125, "latencyMs": 999, "status": "OK"},
+            {"service": "auth", "timestamp": 1710000121, "latencyMs": 95, "status": "FAIL"},
+        ]
+    )
+    response = solve_phase2(inner)
+    assert response.status_code == 200
+    # Window: only the auth heartbeat at exactly `since` (boundary inclusive).
+    assert response.json()["sloOutput"] == {"availability": 1.0, "p95LatencyMs": 120}
+
+
+def test_solve_phase2_empty_window_returns_zero_slo():
+    inner = phase2_inner_payload(
+        heartbeats=[
+            {"service": "auth", "timestamp": 1710000121, "latencyMs": 95, "status": "OK"},
+        ],
+        sloQuery={"service": "auth", "since": 1710000123},
+    )
+    response = solve_phase2(inner)
+    assert response.status_code == 200
+    assert response.json()["sloOutput"] == {"availability": 0.0, "p95LatencyMs": 0}
+
+
+def test_solve_phase2_p95_uses_nearest_rank():
+    heartbeats = [
+        {"service": "auth", "timestamp": 1710000123 + i, "latencyMs": i + 1, "status": "OK"}
+        for i in range(10)
+    ]
+    inner = phase2_inner_payload(heartbeats=heartbeats)
+    response = solve_phase2(inner)
+    assert response.status_code == 200
+    # Sorted latencies 1..10, nearest-rank p95 index ceil(0.95*10)-1 = 9 -> 10.
+    assert response.json()["sloOutput"] == {"availability": 1.0, "p95LatencyMs": 10}
+
+
+def test_solve_phase2_availability_is_fraction_of_window():
+    heartbeats = [
+        {"service": "auth", "timestamp": 1710000123, "latencyMs": 10, "status": "OK"},
+        {"service": "auth", "timestamp": 1710000124, "latencyMs": 20, "status": "FAIL"},
+        {"service": "auth", "timestamp": 1710000125, "latencyMs": 30, "status": "FAIL"},
+    ]
+    inner = phase2_inner_payload(heartbeats=heartbeats)
+    response = solve_phase2(inner)
+    assert response.status_code == 200
+    slo = response.json()["sloOutput"]
+    assert abs(slo["availability"] - 1 / 3) < 1e-9
+    assert slo["p95LatencyMs"] == 30
+
+
+def test_solve_phase1_payload_keeps_legacy_shape():
+    encoded = base64.b64encode(json.dumps(solve_inner_payload()).encode()).decode()
+    response = client.post("/solve", json={"payload": encoded})
+    assert response.status_code == 200
+    assert "sloOutput" not in response.json()
+
+
 def make_move_payload(**overrides):
     payload = {
         "protocol_version": 2,
