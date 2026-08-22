@@ -17,6 +17,9 @@ already reach t:
 * ``multi`` — if the edge closes a loop, how many other nodes already sit on a
   cycle through the destination; two independent return paths are stronger
   than a single return.
+* ``fan``  — the destination's existing in-neighbours plus the source's
+  existing out-neighbours, so fan-in / fan-out activity is never scored as
+  zero.
 
 The raw signal is mapped to [0, 1] monotonically.  The first edge between two
 isolated entities yields 0.0; extensions, convergences, single returns and
@@ -51,6 +54,7 @@ LOOKBACK = timedelta(hours=24)
 W_PAR = 2.0      # an alternative route between already-connected nodes
 W_CYCLE = 10.0   # the edge closes a return path
 W_MULTI = 15.0   # per additional node already on a cycle through destination
+W_FAN = 0.5      # per existing in-neighbour of v / out-neighbour of u
 SATURATION = 10.0  # risk = raw / (raw + SATURATION)
 
 
@@ -69,6 +73,8 @@ class GhostChainScorer:
         with self._lock:
             self.seen: dict[str, tuple[float, str]] = {}
             self.adj: dict[str, dict[str, int]] = {}
+            self.in_deg: dict[str, int] = {}
+            self.out_deg: dict[str, int] = {}
             self.edge_heap: list[tuple[float, int, str, str, str]] = []
             self.node_ids: dict[str, int] = {}
             self.id_to_node: list[str] = []
@@ -150,6 +156,8 @@ class GhostChainScorer:
                     self.adj.pop(u, None)
             else:
                 counts[v] = count - 1
+            self.out_deg[u] = self.out_deg.get(u, 1) - 1
+            self.in_deg[v] = self.in_deg.get(v, 1) - 1
         if removed:
             self._rebuild_closure()
 
@@ -197,7 +205,19 @@ class GhostChainScorer:
             scc = self.rev[v] & self.reach[v]
             multi = scc.bit_count() - 1
 
-        raw = max(0, new_pairs - 1) + W_PAR * par_pairs + W_CYCLE * cycle + W_MULTI * multi
+        u_activity = self.in_deg.get(u, 0) + self.out_deg.get(u, 0)
+        v_activity = self.in_deg.get(v, 0) + self.out_deg.get(v, 0)
+        isolated = u_activity == 0 and v_activity == 0
+        baseline = 1 if isolated else 0
+        fan = self.in_deg.get(v, 0) + self.out_deg.get(u, 0)
+
+        raw = (
+            max(0, new_pairs - baseline)
+            + W_PAR * par_pairs
+            + W_FAN * fan
+            + W_CYCLE * cycle
+            + W_MULTI * multi
+        )
         return raw / (raw + SATURATION)
 
     def _apply_edge(self, u: str, v: str, timestamp: float, tx_id: str) -> None:
@@ -207,6 +227,8 @@ class GhostChainScorer:
         counts = self.adj.setdefault(u, {})
         is_first_direct_edge = counts.get(v, 0) == 0
         counts[v] = counts.get(v, 0) + 1
+        self.out_deg[u] = self.out_deg.get(u, 0) + 1
+        self.in_deg[v] = self.in_deg.get(v, 0) + 1
 
         self._seq += 1
         heapq.heappush(self.edge_heap, (timestamp, self._seq, u, v, tx_id))
