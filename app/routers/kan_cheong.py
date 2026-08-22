@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from app.simple_kancheong import solve_case
+from app.kan_cheong import solve_case
 
 router = APIRouter()
 
