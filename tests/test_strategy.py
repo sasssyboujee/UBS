@@ -1,5 +1,9 @@
-from app.models import MoveRequest
+from app.models import HandResult, MoveRequest
 from app.strategy import (
+    _codename_observations,
+    _record_recent_hands,
+    _reset_learning,
+    _rule_showdown,
     choose_action,
     post_reveal_equity,
     pot_odds,
@@ -130,3 +134,134 @@ def test_small_blind_first_action_raises_strong_card():
     response = choose_action(request)
     assert response.action == "raise"
     assert response.amount == 4
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: unknown table rules, learning from recent_hands
+# ---------------------------------------------------------------------------
+
+
+def make_learned_request(codename, observations, match_id="learn-match"):
+    """Build a request whose recent_hands record `our_card` beating `opp_card`."""
+    hands = [
+        HandResult(
+            hand_number=i,
+            community_number=7,
+            winners=[0],
+            shown_numbers={"you": our_card, "opp": opp_card},
+        )
+        for i, (our_card, opp_card) in enumerate(observations, start=1)
+    ]
+    return MoveRequest(
+        match_id=match_id,
+        table_rule=codename,
+        leg_number=1,
+        total_legs=4,
+        your_seat=0,
+        button_seat=1,
+        recent_hands=hands,
+    )
+
+
+def test_rule_showdown_falls_back_to_standard_without_observations():
+    _reset_learning()
+    assert _rule_showdown(13, 2, 7, "unseen_rule") == 1.0
+    assert _rule_showdown(2, 13, 7, "unseen_rule") == 0.0
+    assert _rule_showdown(7, 13, 7, "unseen_rule") == 1.0  # pair beats non-pair
+
+
+def test_recent_hands_are_deduplicated():
+    _reset_learning()
+    request = make_learned_request("dedupe_rule", [(2, 13), (3, 12), (4, 11)])
+    _record_recent_hands(request)
+    assert _codename_observations("dedupe_rule") == 3
+
+    # The same recent_hands arrive again on the next turn; nothing new.
+    _record_recent_hands(request)
+    assert _codename_observations("dedupe_rule") == 3
+
+    # A fresh request with one extra hand only adds that hand.
+    request2 = make_learned_request(
+        "dedupe_rule", [(2, 13), (3, 12), (4, 11), (5, 10)]
+    )
+    _record_recent_hands(request2)
+    assert _codename_observations("dedupe_rule") == 4
+
+
+def test_learning_flips_showdown_order():
+    _reset_learning()
+    # Teach the codename that lower cards beat higher cards.
+    observations = [(i, j) for i in range(1, 13) for j in range(i + 1, 14)]
+    _record_recent_hands(make_learned_request("low_wins", observations))
+    assert _codename_observations("low_wins") == 78
+
+    assert _rule_showdown(2, 13, 7, "low_wins") == 1.0
+    assert _rule_showdown(13, 2, 7, "low_wins") == 0.0
+    # A pair type with no observations (community 5) keeps the strong prior.
+    assert _rule_showdown(2, 5, 5, "low_wins") == 0.0
+    # The community 7 pair was observed losing to low cards, so it is weak.
+    assert _rule_showdown(2, 7, 7, "low_wins") == 1.0
+
+
+def test_choose_action_unknown_rule_no_data_stays_legal():
+    _reset_learning()
+    request = MoveRequest(
+        round="post_reveal",
+        table_rule="mystery",
+        your_number=5,
+        community_number=9,
+        to_call=10,
+        pot=30,
+        your_stack=200,
+        min_raise_to=20,
+        max_raise_to=200,
+        legal_actions=["fold", "call", "raise"],
+    )
+    response = choose_action(request)
+    assert response.action in request.legal_actions
+
+
+def test_choose_action_unknown_rule_learned_value_bets():
+    _reset_learning()
+    observations = [(i, j) for i in range(1, 13) for j in range(i + 1, 14)]
+    _record_recent_hands(make_learned_request("low_wins", observations))
+
+    request = MoveRequest(
+        round="post_reveal",
+        table_rule="low_wins",
+        match_id="learn-match",
+        leg_number=1,
+        total_legs=4,
+        your_number=2,
+        community_number=7,
+        to_call=0,
+        pot=10,
+        your_stack=200,
+        min_raise_to=4,
+        max_raise_to=200,
+        legal_actions=["check", "bet"],
+    )
+    response = choose_action(request)
+    assert response.action == "bet"
+    assert response.amount is not None
+    assert 4 <= response.amount <= 200
+
+
+def test_choose_action_unknown_rule_pre_reveal_stays_cautious_without_data():
+    _reset_learning()
+    request = MoveRequest(
+        round="pre_reveal",
+        table_rule="mystery",
+        your_number=13,
+        to_call=0,
+        pot=3,
+        your_stack=200,
+        your_seat=0,
+        button_seat=1,
+        min_raise_to=4,
+        max_raise_to=200,
+        legal_actions=["check", "raise"],
+    )
+    response = choose_action(request)
+    # No data yet: do not raise blind under an unknown rule.
+    assert response.action == "check"

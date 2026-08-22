@@ -62,6 +62,8 @@ class MoveRequest(BaseModel):
     hand_number: int = 0
     total_hands: int = 100
     round: str = "pre_reveal"
+    leg_number: int | None = None
+    total_legs: int | None = None
     your_number: int | None = None
     community_number: int | None = None
     your_seat: int = 0

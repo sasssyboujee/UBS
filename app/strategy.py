@@ -1,30 +1,170 @@
 """Decision logic for the SHOWDOWN betting-game bot.
 
-Pure functions only: no I/O, no mutable state. The coordinator calls
-POST /move once per turn, so decisions must be fast and side-effect-free.
+Phase 1 (``table_rule == "standard"``) uses exact showdown equities vs a
+random opponent and range-aware decisions when facing aggression.
 
-The game is heads-up no-limit with one secret number (1-13) per player and
-one community number revealed halfway through the hand. At showdown a pair
-(your number == community number) beats any non-pair; otherwise the higher
-number wins; ties split the pot.
+Phase 2 adds opaque ``table_rule`` codenames and multi-leg attempts. The rules
+are never disclosed, so the bot learns each codename's showdown ordering from
+the ``recent_hands`` the coordinator sends on every request, then plays an
+adaptive strategy: cautious and exploratory while data is scarce, aggressive
+only once the rule is understood.
 
-Strategy outline
-----------------
-* Correct showdown equities vs a random opponent.
-* When facing aggression, estimate the opponent's *range* instead of assuming
-  a random hand: a raise/bet is skewed toward strong cards, pairs, and a few
-  bluffs. This keeps us from paying off big bets with medium holdings.
-* Value-bet strong hands, bluff occasionally, and never fold a pair.
-* Never re-raise a non-pair into a raise post-reveal (opponent likely paired).
+Learning state lives in module memory only (no I/O). Decisions stay fast and
+deterministic for a given state; the coordinator never retries, so recording
+observations is safe.
 """
 
 from __future__ import annotations
 
 import zlib
+from collections import OrderedDict
 
 from app.models import MoveRequest, MoveResponse
 
 KNOWN_TABLE_RULES = {"standard"}
+
+# ---------------------------------------------------------------------------
+# Learned per-codename showdown model
+# ---------------------------------------------------------------------------
+# Hand types: 0..12 -> non-pair card 1..13, 13..25 -> paired card 1..13.
+_HAND_TYPES = 26
+_PRIOR_WEIGHT = 2.0
+_POWER_EPS = 0.02
+
+# codename -> {"wins": [float; 26], "games": [float; 26]}
+_RULE_STATS: dict[str, dict[str, list[float]]] = {}
+
+# (match_id, leg_number) -> highest hand_number already folded into the model.
+# recent_hands overlaps between requests, so without this every showdown would
+# be counted many times.
+_SEEN_MAX_HAND: OrderedDict[tuple[str, int], int] = OrderedDict()
+_SEEN_MAX_KEYS = 32
+
+
+def _reset_learning() -> None:
+    """Clear all learned state (used by tests)."""
+    _RULE_STATS.clear()
+    _SEEN_MAX_HAND.clear()
+
+
+def _hand_index(card: int, paired: bool) -> int:
+    return (card - 1) + (13 if paired else 0)
+
+
+def _prior_power(idx: int) -> float:
+    """Standard-rule strength of a hand type, used as the learning prior."""
+    card = idx % 13 + 1
+    if idx >= 13:
+        return 25.0 / 26.0
+    return (22 * card + 15) / 338.0
+
+
+def _stats(codename: str) -> dict[str, list[float]]:
+    stats = _RULE_STATS.get(codename)
+    if stats is None:
+        stats = {"wins": [0.0] * _HAND_TYPES, "games": [0.0] * _HAND_TYPES}
+        _RULE_STATS[codename] = stats
+    return stats
+
+
+def _codename_power(codename: str, idx: int) -> float | None:
+    """Laplace-smoothed strength of a hand type under a codename.
+
+    Returns ``None`` when the codename has never been observed (no stats),
+    otherwise blends observed wins/losses with the standard-rule prior so
+    unseen hand types still have a sensible default.
+    """
+    stats = _RULE_STATS.get(codename)
+    if stats is None:
+        return None
+    wins = stats["wins"][idx]
+    games = stats["games"][idx]
+    return (wins + _PRIOR_WEIGHT * _prior_power(idx)) / (games + _PRIOR_WEIGHT)
+
+
+def _codename_observations(codename: str) -> int:
+    """Number of showdown comparisons recorded for a codename."""
+    stats = _RULE_STATS.get(codename)
+    if stats is None:
+        return 0
+    return int(sum(stats["games"]) / 2.0)
+
+
+# ---------------------------------------------------------------------------
+# Observation recording
+# ---------------------------------------------------------------------------
+
+
+def _bump(stats: dict[str, list[float]], winner_idx: int, loser_idx: int, amount: float) -> None:
+    stats["wins"][winner_idx] += amount
+    stats["games"][winner_idx] += 1.0
+    stats["games"][loser_idx] += 1.0
+
+
+def _record_hand(req: MoveRequest, codename: str, hand) -> None:
+    """Fold one showdown result into the codename model."""
+    if hand.community_number is None:
+        return
+    shown = hand.shown_numbers or {}
+    if len(shown) < 2:
+        return
+    our_num = shown.get("you")
+    if our_num is None:
+        return
+    opp_num = next((num for name, num in shown.items() if name != "you"), None)
+    if opp_num is None:
+        return
+
+    comm = hand.community_number
+    our_idx = _hand_index(our_num, our_num == comm)
+    opp_idx = _hand_index(opp_num, opp_num == comm)
+
+    winners = set(hand.winners or [])
+    if not winners:
+        return
+
+    stats = _stats(codename)
+    if len(winners) == 2:
+        # Split pot: both hands have equal showdown value.
+        _bump(stats, our_idx, opp_idx, 0.5)
+        _bump(stats, opp_idx, our_idx, 0.5)
+    elif req.your_seat in winners:
+        _bump(stats, our_idx, opp_idx, 1.0)
+    else:
+        _bump(stats, opp_idx, our_idx, 1.0)
+
+
+def _record_recent_hands(req: MoveRequest) -> None:
+    """Learn from ``recent_hands``, skipping hands we have already seen.
+
+    Hands are deduplicated per (match_id, leg) using the highest hand_number
+    processed so far; ``recent_hands`` overlaps heavily between requests.
+    """
+    codename = req.table_rule
+    if not codename or codename == "standard":
+        return
+
+    key = (req.match_id or "", req.leg_number or 0)
+    seen = _SEEN_MAX_HAND.get(key, 0)
+    max_hand = seen
+
+    for hand in req.recent_hands or []:
+        hand_no = hand.hand_number or 0
+        if hand_no <= seen:
+            continue
+        max_hand = max(max_hand, hand_no)
+        _record_hand(req, codename, hand)
+
+    if max_hand > seen:
+        _SEEN_MAX_HAND[key] = max_hand
+        _SEEN_MAX_HAND.move_to_end(key)
+        while len(_SEEN_MAX_HAND) > _SEEN_MAX_KEYS:
+            _SEEN_MAX_HAND.popitem(last=False)
+
+
+# ---------------------------------------------------------------------------
+# Showdown equities
+# ---------------------------------------------------------------------------
 
 
 def pre_reveal_equity(card: int) -> float:
@@ -45,11 +185,72 @@ def post_reveal_equity(card: int, community: int) -> float:
     return (wins + 0.5) / 13.0
 
 
+def _showdown_value(card: int, opp: int, community: int) -> float:
+    """Our share (1 win, 0 loss, 0.5 tie) at showdown vs one opponent card."""
+    we_pair = card == community
+    opp_pair = opp == community
+    if we_pair and opp_pair:
+        return 0.5
+    if we_pair:
+        return 1.0
+    if opp_pair:
+        return 0.0
+    if card > opp:
+        return 1.0
+    if card < opp:
+        return 0.0
+    return 0.5
+
+
+def _rule_showdown(card: int, opp: int, community: int, codename: str) -> float:
+    """Showdown share under a codename, using learned powers when available."""
+    if codename == "standard":
+        return _showdown_value(card, opp, community)
+
+    we_idx = _hand_index(card, card == community)
+    opp_idx = _hand_index(opp, opp == community)
+    our_power = _codename_power(codename, we_idx)
+    opp_power = _codename_power(codename, opp_idx)
+    if our_power is None or opp_power is None:
+        # No observations for this codename yet: standard rule is the prior.
+        return _showdown_value(card, opp, community)
+
+    if our_power > opp_power + _POWER_EPS:
+        return 1.0
+    if opp_power > our_power + _POWER_EPS:
+        return 0.0
+    return 0.5
+
+
+def _equity_pre(card: int, codename: str) -> float:
+    if codename == "standard":
+        return pre_reveal_equity(card)
+    total = 0.0
+    for comm in range(1, 14):
+        for opp in range(1, 14):
+            total += _rule_showdown(card, opp, comm, codename)
+    return total / 169.0
+
+
+def _equity_post(card: int, community: int, codename: str) -> float:
+    if codename == "standard":
+        return post_reveal_equity(card, community)
+    total = 0.0
+    for opp in range(1, 14):
+        total += _rule_showdown(card, opp, community, codename)
+    return total / 13.0
+
+
 def pot_odds(to_call: int, pot: int) -> float:
     """Fraction of the final pot we must contribute to stay in the hand."""
     if to_call <= 0:
         return 0.0
     return to_call / (pot + to_call)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 
 def _our_player(req: MoveRequest):
@@ -75,25 +276,10 @@ def _last_opponent_action(req: MoveRequest) -> str | None:
     return None
 
 
-def _showdown_value(card: int, opp: int, community: int) -> float:
-    """Our share (1 win, 0 loss, 0.5 tie) at showdown vs one opponent card."""
-    we_pair = card == community
-    opp_pair = opp == community
-    if we_pair and opp_pair:
-        return 0.5
-    if we_pair:
-        return 1.0
-    if opp_pair:
-        return 0.0
-    if card > opp:
-        return 1.0
-    if card < opp:
-        return 0.0
-    return 0.5
-
-
-def _range_equity(card: int, community: int | None, opp_weights: dict[int, float]) -> float:
-    """Equity vs a weighted opponent-card distribution.
+def _range_equity_for(
+    card: int, community: int | None, opp_weights: dict[int, float], codename: str
+) -> float:
+    """Equity vs a weighted opponent-card distribution under a codename.
 
     ``community`` is None pre-reveal, in which case we average over all 13
     possible community numbers.
@@ -106,7 +292,7 @@ def _range_equity(card: int, community: int | None, opp_weights: dict[int, float
                 continue
             equity = 0.0
             for comm in range(1, 14):
-                equity += _showdown_value(card, opp, comm)
+                equity += _rule_showdown(card, opp, comm, codename)
             total += weight * (equity / 13.0)
             weight_sum += weight
         return total / weight_sum if weight_sum else 0.0
@@ -116,7 +302,7 @@ def _range_equity(card: int, community: int | None, opp_weights: dict[int, float
     for opp, weight in opp_weights.items():
         if weight <= 0:
             continue
-        total += weight * _showdown_value(card, opp, community)
+        total += weight * _rule_showdown(card, opp, community, codename)
         weight_sum += weight
     return total / weight_sum if weight_sum else 0.0
 
@@ -131,18 +317,14 @@ def _pre_reveal_opp_weights() -> dict[int, float]:
     return weights
 
 
-def _post_reveal_opp_weights(community: int, raised: bool) -> dict[int, float]:
-    """Assumed range for a post-reveal bet (raised=False) or raise (raised=True).
-
-    Pairs always carry full weight; value non-pairs depend on how much
-    strength the opponent has shown; a small bluff component is included.
-    """
+def _post_reveal_opp_weights(community: int, raised: bool, codename: str) -> dict[int, float]:
+    """Assumed range for a post-reveal bet (raised=False) or raise (raised=True)."""
     weights = {card: 0.0 for card in range(1, 14)}
     for card in range(1, 14):
         if card == community:
             weights[card] = 1.0
             continue
-        equity = post_reveal_equity(card, community)
+        equity = _equity_post(card, community, codename)
         if raised:
             if equity > 0.75:
                 weights[card] = 1.0
@@ -167,11 +349,16 @@ def _clamp_raise(req: MoveRequest, pot_fraction: float) -> int | None:
 
 def _chance(req: MoveRequest, key: str, percent: int) -> bool:
     """Deterministic pseudo-random coin flip, stable per match/hand/round/key."""
-    seed = f"{req.match_id}:{req.hand_number}:{req.round}:{key}"
+    seed = f"{req.match_id}:{req.table_rule}:{req.hand_number}:{req.round}:{key}"
     return zlib.crc32(seed.encode("utf-8")) % 100 < percent
 
 
-def _pre_reveal(req: MoveRequest, legal: set[str]) -> MoveResponse:
+# ---------------------------------------------------------------------------
+# Standard-rule strategy
+# ---------------------------------------------------------------------------
+
+
+def _pre_reveal(req: MoveRequest, legal: set[str], codename: str = "standard") -> MoveResponse:
     card = req.your_number or 1
     to_call = req.to_call or 0
     pot = req.pot or 0
@@ -197,7 +384,7 @@ def _pre_reveal(req: MoveRequest, legal: set[str]) -> MoveResponse:
         return MoveResponse(action="fold")
 
     # Facing a raise: judge our hand against a strong range, not a random one.
-    equity = _range_equity(card, None, _pre_reveal_opp_weights())
+    equity = _range_equity_for(card, None, _pre_reveal_opp_weights(), codename)
     odds = pot_odds(to_call, pot)
     if equity > odds + 0.04:
         # Re-raise only the nuts once; keep pots small with everything else.
@@ -207,7 +394,7 @@ def _pre_reveal(req: MoveRequest, legal: set[str]) -> MoveResponse:
     return MoveResponse(action="fold")
 
 
-def _post_reveal(req: MoveRequest, legal: set[str]) -> MoveResponse:
+def _post_reveal(req: MoveRequest, legal: set[str], codename: str = "standard") -> MoveResponse:
     card = req.your_number or 1
     community = req.community_number
     to_call = req.to_call or 0
@@ -216,7 +403,7 @@ def _post_reveal(req: MoveRequest, legal: set[str]) -> MoveResponse:
 
     if community is None:
         # Malformed payload guard: treat as pre-reveal.
-        return _pre_reveal(req, legal)
+        return _pre_reveal(req, legal, codename)
 
     if card == community:
         # Huge favourite: value-bet and never fold.
@@ -228,7 +415,7 @@ def _post_reveal(req: MoveRequest, legal: set[str]) -> MoveResponse:
             return MoveResponse(action="raise", amount=_clamp_raise(req, 0.8))
         return MoveResponse(action="call")
 
-    equity = post_reveal_equity(card, community)
+    equity = _equity_post(card, community, codename)
 
     if to_call == 0:
         # First to act post-reveal.
@@ -240,8 +427,8 @@ def _post_reveal(req: MoveRequest, legal: set[str]) -> MoveResponse:
 
     # Facing a bet/raise: evaluate against the opponent's likely range.
     last_opp = _last_opponent_action(req)
-    opp_weights = _post_reveal_opp_weights(community, last_opp == "raise")
-    range_equity = _range_equity(card, community, opp_weights)
+    opp_weights = _post_reveal_opp_weights(community, last_opp == "raise", codename)
+    range_equity = _range_equity_for(card, community, opp_weights, codename)
     odds = pot_odds(to_call, pot)
 
     if range_equity > odds + 0.03:
@@ -254,18 +441,90 @@ def _post_reveal(req: MoveRequest, legal: set[str]) -> MoveResponse:
     return MoveResponse(action="fold")
 
 
-def _conservative(req: MoveRequest, legal: set[str]) -> MoveResponse:
-    """Fallback for unknown table rules: never raise, only pay tiny amounts."""
+# ---------------------------------------------------------------------------
+# Unknown-rule (Phase 2) strategy
+# ---------------------------------------------------------------------------
+
+
+def _rule_pre_reveal(req: MoveRequest, legal: set[str], codename: str) -> MoveResponse:
+    """Pre-reveal play under an unknown rule.
+
+    With few observations we keep pots small and call modest raises so hands
+    reach showdown and the rule gets learned. Once the codename is understood
+    we use the learned equity to value-raise and fold correctly.
+    """
+    card = req.your_number or 1
     to_call = req.to_call or 0
     pot = req.pot or 0
     stack = req.your_stack or 0
+    obs = _codename_observations(codename)
 
     if to_call == 0:
+        if obs >= 6 and "raise" in legal:
+            equity = _equity_pre(card, codename)
+            if equity > 0.58:
+                return MoveResponse(action="raise", amount=_clamp_raise(req, 0.6))
+            if equity < 0.35 and _chance(req, "bluff_pre_rule", 10):
+                return MoveResponse(action="raise", amount=_clamp_raise(req, 0.5))
         return MoveResponse(action="check")
 
-    if to_call <= max(2, int(0.05 * pot)) and to_call <= 0.1 * stack:
+    equity = _range_equity_for(card, None, _pre_reveal_opp_weights(), codename)
+    odds = pot_odds(to_call, pot)
+
+    if obs < 6:
+        # Exploration: pay small raises to reach showdown and learn the rule.
+        if to_call <= max(3, int(0.08 * stack)) and "call" in legal:
+            return MoveResponse(action="call")
+        if equity > odds + 0.10 and "call" in legal:
+            return MoveResponse(action="call")
+        return MoveResponse(action="fold")
+
+    if equity > odds + 0.03:
+        if equity > 0.72 and "raise" in legal and to_call < 0.25 * stack:
+            return MoveResponse(action="raise", amount=_clamp_raise(req, 0.6))
         return MoveResponse(action="call")
     return MoveResponse(action="fold")
+
+
+def _rule_post_reveal(req: MoveRequest, legal: set[str], codename: str) -> MoveResponse:
+    """Post-reveal play under an unknown rule using learned equities."""
+    card = req.your_number or 1
+    community = req.community_number
+    if community is None:
+        return _rule_pre_reveal(req, legal, codename)
+
+    to_call = req.to_call or 0
+    pot = req.pot or 0
+    stack = req.your_stack or 0
+    obs = _codename_observations(codename)
+    equity = _equity_post(card, community, codename)
+
+    if to_call == 0:
+        if "bet" in legal and equity > 0.6:
+            return MoveResponse(action="bet", amount=_clamp_raise(req, 0.5))
+        if "bet" in legal and equity < 0.32 and _chance(req, "bluff_post_rule", 10):
+            return MoveResponse(action="bet", amount=_clamp_raise(req, 0.5))
+        return MoveResponse(action="check")
+
+    last_opp = _last_opponent_action(req)
+    opp_weights = _post_reveal_opp_weights(community, last_opp == "raise", codename)
+    range_equity = _range_equity_for(card, community, opp_weights, codename)
+    odds = pot_odds(to_call, pot)
+
+    if obs < 6 and to_call <= max(3, int(0.08 * stack)) and "call" in legal:
+        return MoveResponse(action="call")
+
+    if range_equity > odds + 0.03:
+        if (last_opp == "bet" and equity > 0.8 and "raise" in legal
+                and to_call < 0.25 * stack):
+            return MoveResponse(action="raise", amount=_clamp_raise(req, 0.6))
+        return MoveResponse(action="call")
+    return MoveResponse(action="fold")
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
 
 
 def _legalize(resp: MoveResponse, req: MoveRequest, legal: set[str]) -> MoveResponse:
@@ -290,14 +549,25 @@ def _legalize(resp: MoveResponse, req: MoveRequest, legal: set[str]) -> MoveResp
 
 
 def choose_action(req: MoveRequest) -> MoveResponse:
-    """Pick the bot's next action for a /move request."""
-    legal = set(req.legal_actions or [])
+    """Pick the bot's next action for a /move request.
 
-    if req.table_rule not in KNOWN_TABLE_RULES:
-        resp = _conservative(req, legal)
-    elif req.round == "pre_reveal":
-        resp = _pre_reveal(req, legal)
+    ``table_rule`` is read from every request. Unknown codenames are played
+    with the learned adaptive strategy; observations from ``recent_hands`` are
+    folded into the model first so decisions use the freshest data.
+    """
+    legal = set(req.legal_actions or [])
+    _record_recent_hands(req)
+
+    codename = req.table_rule or "standard"
+    if codename in KNOWN_TABLE_RULES:
+        if req.round == "pre_reveal":
+            resp = _pre_reveal(req, legal, codename)
+        else:
+            resp = _post_reveal(req, legal, codename)
     else:
-        resp = _post_reveal(req, legal)
+        if req.round == "pre_reveal":
+            resp = _rule_pre_reveal(req, legal, codename)
+        else:
+            resp = _rule_post_reveal(req, legal, codename)
 
     return _legalize(resp, req, legal)
