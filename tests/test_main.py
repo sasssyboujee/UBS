@@ -347,7 +347,7 @@ def test_move_checks_when_free_pre_reveal():
     assert response.json()["action"] == "check"
 
 
-def test_move_unknown_table_rule_stays_conservative():
+def test_move_unknown_table_rule_shoves_pair_post_reveal():
     payload = make_move_payload(
         table_rule="mystery",
         your_number=13,
@@ -359,7 +359,10 @@ def test_move_unknown_table_rule_stays_conservative():
     )
     response = client.post("/move", json=payload)
     assert response.status_code == 200
-    assert response.json()["action"] in ("fold", "call")
+    body = response.json()
+    # Gambling phase: a post-reveal pair is always a shove.
+    assert body["action"] == "raise"
+    assert payload["min_raise_to"] <= body["amount"] <= payload["max_raise_to"]
 
 
 def test_move_ignores_unknown_fields():

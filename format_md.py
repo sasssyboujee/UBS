@@ -1,5 +1,4 @@
 import os
-import re
 
 directories = ['phase1 qns', 'phase 2 qns', 'phase3']
 
@@ -16,7 +15,7 @@ def format_markdown(text):
             formatted.append('\n## ' + stripped.replace(':', ''))
         elif stripped.startswith('Problem Set'):
             formatted.append('\n### ' + stripped)
-        elif stripped.startswith('Phase ') or stripped.startswith('Stage '):
+        elif stripped.startswith(('Phase ', 'Stage ')):
             formatted.append('\n# ' + stripped)
         elif stripped in ['Request:', 'Response:', 'Input', 'Output']:
             formatted.append('\n#### ' + stripped.replace(':', ''))

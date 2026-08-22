@@ -209,3 +209,24 @@ class GhostResetResponse(BaseModel):
 
 class GhostHealthResponse(BaseModel):
     status: str
+
+
+# ---------------------------------------------------------------------------
+# Stonks challenge models
+# ---------------------------------------------------------------------------
+
+class StockInfo(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    
+    price: int
+    qty: int
+
+class StonksTestCase(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    
+    energy: int
+    capital: int
+    timeline: dict[str, dict[str, StockInfo]]
+
+# The request is just a list of StonksTestCase
+

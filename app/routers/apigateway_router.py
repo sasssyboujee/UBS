@@ -110,6 +110,8 @@ def _compute_slo(
     if slo_query is None:
         window = heartbeats
     else:
+        # Guide semantics: the SLO window is the queried service's heartbeats
+        # at/after `since` (boundary inclusive).
         window = [
             hb
             for hb in heartbeats
@@ -131,7 +133,7 @@ def _compute_slo(
     )
 
     availability = ok_count / len(window)
-    # P95
+    # P95: nearest-rank percentile (ceil(0.95*n)-1, 0-based).
     latencies = sorted(
         hb.latencyMs
         for hb in window

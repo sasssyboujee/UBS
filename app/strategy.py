@@ -947,6 +947,7 @@ def _lockdown_nit_move(
 
 _P3_MIN_OBS = 10
 _P3_MONSTER = 0.85
+_P3_TOP_MARGIN = 0.03
 _P3_STEAL = 0.74
 _P3_STEAL_MAX_BEHIND = 2
 
@@ -1031,33 +1032,22 @@ def _phase3_raise_to(req: MoveRequest, target: int) -> int:
 
 
 def _phase3_move(req: MoveRequest, legal: set[str], codename: str) -> MoveResponse:
-    """Six-seat strategy: shove monsters, steal in position, otherwise fold."""
+    """Six-seat strategy: extract value with monsters, value bet strong hands, fold weak hands."""
     card = req.your_number or 1
     comm = req.community_number
     to_call = req.to_call or 0
     pot = req.pot or 0
+    stack = req.your_stack or 0
+
+    n_opp = _live_opponents(req)
+    if n_opp == 0:
+        n_opp = 1
 
     obs = _codename_observations(codename)
     learned = codename in KNOWN_TABLE_RULES or obs >= _P3_MIN_OBS
 
-    if req.round == "pre_reveal":
-        s1 = _equity_pre(card, codename)
-        steal_ok = s1 >= _P3_STEAL and _opponents_behind(req) <= _P3_STEAL_MAX_BEHIND
-        # The learned model is biased by selective showdown sampling, so the
-        # absolute equity of mid-high cards is inflated. Shove pre-reveal only
-        # with the single best card under the (possibly learned) rule.
-        best_s1 = max(_equity_pre(c, codename) for c in range(1, 14))
-        monster = s1 >= _P3_MONSTER and s1 >= best_s1 - 1e-9
-    else:
-        if comm is None:
-            return MoveResponse(action="check" if to_call == 0 else "fold")
-        s1 = _equity_post(card, comm, codename)
-        steal_ok = False
-        monster = s1 >= _P3_MONSTER
-
     if not learned:
-        # Exploration: keep pots tiny and reach showdown cheaply to learn the
-        # rule. Never commit a meaningful stack on an unlearned codename.
+        # Exploration: keep pots tiny.
         if to_call == 0:
             return MoveResponse(action="check")
         if to_call <= 2 and "call" in legal:
@@ -1066,31 +1056,97 @@ def _phase3_move(req: MoveRequest, legal: set[str], codename: str) -> MoveRespon
             return MoveResponse(action="fold")
         return MoveResponse(action="check")
 
-    if monster:
-        if to_call == 0:
-            if "raise" in legal and req.max_raise_to is not None:
-                return MoveResponse(action="raise", amount=req.max_raise_to)
-            if "bet" in legal and req.max_raise_to is not None:
-                return MoveResponse(action="bet", amount=req.max_raise_to)
-            return MoveResponse(action="check")
-        if "raise" in legal and req.max_raise_to is not None:
-            return MoveResponse(action="raise", amount=req.max_raise_to)
-        if "call" in legal:
+    if req.round == "pre_reveal":
+        eq = _equity_pre_multi(card, codename, n_opp)
+        best_eq = max(_equity_pre_multi(c, codename, n_opp) for c in range(1, 14))
+        
+        strong = eq >= best_eq - 0.05 and eq > 1.0 / (n_opp + 1)
+        marginal = eq >= (best_eq + (1.0 / (n_opp + 1))) / 2.0
+        
+        if strong:
+            if to_call == 0:
+                if "bet" in legal:
+                    target = _our_bet_this_round(req) + min(max(3, pot), stack // 4)
+                    return MoveResponse(action="bet", amount=_phase3_raise_to(req, target))
+                return MoveResponse(action="check")
+            
+            if to_call <= max(stack // 3, 10) and "call" in legal:
+                return MoveResponse(action="call")
+            
+            if eq >= best_eq - 1e-5 and "call" in legal:
+                return MoveResponse(action="call")
+                
+            if "fold" in legal:
+                return MoveResponse(action="fold")
             return MoveResponse(action="call")
-        return MoveResponse(action="check")
-
-    if to_call == 0:
-        if steal_ok and "raise" in legal:
-            target = _our_bet_this_round(req) + max(4, pot // 2 + 2)
-            return MoveResponse(action="raise", amount=_phase3_raise_to(req, target))
-        return MoveResponse(action="check")
-
-    # Completing the small blind costs the same as folding it.
-    if to_call <= 1 and "call" in legal:
-        return MoveResponse(action="call")
-    if "fold" in legal:
-        return MoveResponse(action="fold")
-    return MoveResponse(action="call")
+            
+        elif marginal:
+            if to_call <= 2 and "call" in legal:
+                return MoveResponse(action="call")
+            if "fold" in legal:
+                return MoveResponse(action="fold")
+            return MoveResponse(action="check")
+            
+        else:
+            if to_call == 0:
+                return MoveResponse(action="check")
+            if "fold" in legal:
+                return MoveResponse(action="fold")
+            return MoveResponse(action="check")
+            
+    else:
+        if comm is None:
+            return MoveResponse(action="check" if to_call == 0 else "fold")
+            
+        eq = _equity_post_multi(card, comm, codename, n_opp)
+        best_eq = max(_equity_post_multi(c, comm, codename, n_opp) for c in range(1, 14))
+        
+        monster = eq >= best_eq - 0.05 and eq > 0.6
+        good = eq > 0.4
+        
+        if monster:
+            if to_call == 0:
+                if "bet" in legal:
+                    target_add = min(stack, max(pot, pot // 2 + 5))
+                    target = _our_bet_this_round(req) + target_add
+                    return MoveResponse(action="bet", amount=_phase3_raise_to(req, target))
+                return MoveResponse(action="check")
+            else:
+                if "raise" in legal:
+                    target_add = min(stack, to_call * 2 + pot)
+                    target = _our_bet_this_round(req) + target_add
+                    return MoveResponse(action="raise", amount=_phase3_raise_to(req, target))
+                if "call" in legal:
+                    return MoveResponse(action="call")
+                return MoveResponse(action="check")
+                
+        elif good:
+            if to_call == 0:
+                if "bet" in legal and _chance(req, "p3_bet", 50):
+                    target = _our_bet_this_round(req) + max(3, pot // 3)
+                    return MoveResponse(action="bet", amount=_phase3_raise_to(req, target))
+                return MoveResponse(action="check")
+                
+            if to_call <= max(stack // 4, 10) and "call" in legal:
+                return MoveResponse(action="call")
+                
+            if "fold" in legal:
+                return MoveResponse(action="fold")
+            return MoveResponse(action="call")
+            
+        else:
+            if to_call == 0:
+                if _opponents_behind(req) == 0 and n_opp <= 2 and "bet" in legal and _chance(req, "p3_steal", 30):
+                    target = _our_bet_this_round(req) + max(3, pot // 2)
+                    return MoveResponse(action="bet", amount=_phase3_raise_to(req, target))
+                return MoveResponse(action="check")
+                
+            if to_call <= 1 and "call" in legal:
+                return MoveResponse(action="call")
+                
+            if "fold" in legal:
+                return MoveResponse(action="fold")
+            return MoveResponse(action="check")
 
 
 # ---------------------------------------------------------------------------
@@ -1137,34 +1193,13 @@ def choose_action(req: MoveRequest) -> MoveResponse:
 
     if codename != "standard":
         delta = _our_chip_delta(req)
-        # Coasting Phase: +100 guarantees we survive blind bleed (40 hands * 1.5 = 60 chips) and stay above +25
-        if delta >= 100:
+        # Coasting Phase: +75 guarantees we survive blind bleed and stay above +25
+        if delta >= 75:
             if (req.to_call or 0) == 0:
                 resp = MoveResponse(action="check")
             else:
                 resp = MoveResponse(action="fold")
-        else:
-            # Gambling Phase: All-in with top 50% of cards, else fold immediately
-            card = req.your_number or 1
-            if req.round == "pre_reveal":
-                is_good = card >= 8
-            else:
-                comm = req.community_number or 1
-                is_good = (card == comm) or (card >= 10)
-                
-            if is_good:
-                if "raise" in legal and req.max_raise_to is not None:
-                    resp = MoveResponse(action="raise", amount=req.max_raise_to)
-                elif "bet" in legal and req.max_raise_to is not None:
-                    resp = MoveResponse(action="bet", amount=req.max_raise_to)
-                else:
-                    resp = MoveResponse(action="call")
-            else:
-                if (req.to_call or 0) == 0:
-                    resp = MoveResponse(action="check")
-                else:
-                    resp = MoveResponse(action="fold")
-        return _legalize(resp, req, legal)
+            return _legalize(resp, req, legal)
 
     tier = _lockdown_tier(req)
     if tier == 2:
