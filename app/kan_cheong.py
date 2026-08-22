@@ -22,7 +22,7 @@ repeating a loop on an unobstructed incident edge.
 from __future__ import annotations
 
 import heapq
-import itertools
+import time as _time
 from bisect import bisect_right
 from calendar import timegm
 from datetime import UTC, datetime
@@ -31,11 +31,17 @@ from re import compile as re_compile
 from typing import Any
 
 INF = float("inf")
-MAX_POPS = 50_000
+MAX_POPS = 15_000
+# Per-case wall-clock budget in seconds.  The router enforces a global 9 s
+# timeout across the batch; this per-case limit prevents one pathological
+# case from starving the rest.
+CASE_BUDGET_SECS = 0.45
 
 _ISO_RE = re_compile(
     r"(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?Z?"
 )
+
+UNREACHABLE: dict[str, Any] = {"total_duration_sec": None, "arrival_time": None, "path": []}
 
 
 def parse_time(value: str) -> float:
@@ -98,12 +104,6 @@ def build_segments(windows: list[tuple[float, float, float]]) -> tuple[list[floa
     return starts, ends, factors
 
 
-def factor_at(starts: list[float], factors: list[float], t: float) -> float:
-    idx = bisect_right(starts, t) - 1
-    idx = max(idx, 0)
-    return factors[idx]
-
-
 def travel_time(
     starts: list[float],
     ends: list[float],
@@ -112,18 +112,24 @@ def travel_time(
     t: float,
 ) -> float | None:
     """Arrival time when entering this directed edge at time t, or None if blocked."""
+    if duration == 0:
+        return t
+
     idx = bisect_right(starts, t) - 1
-    idx = max(idx, 0)
+    if idx < 0:
+        idx = 0
 
     if factors[idx] == 0.0:
         return None
 
     remaining = 1.0
     cur = t
-    while idx < len(starts):
+    n_segs = len(starts)
+    while idx < n_segs:
         factor = factors[idx]
         end = ends[idx]
-        cur = max(cur, starts[idx])
+        if cur < starts[idx]:
+            cur = starts[idx]
         if factor == 0.0:
             # Blocked mid-traversal: no progress until this window ends.
             cur = end
@@ -142,10 +148,12 @@ def solve_case(case: dict[str, Any]) -> dict[str, Any]:
     try:
         return _solve_case(case)
     except Exception:  # noqa: BLE001 - a malformed case must not fail the whole batch
-        return {"total_duration_sec": None, "arrival_time": None, "path": []}
+        return UNREACHABLE
 
 
 def _solve_case(case: dict[str, Any]) -> dict[str, Any]:
+    wall_start = _time.monotonic()
+
     start_coord = (int(case["start_coordinate"][0]), int(case["start_coordinate"][1]))
     end_coord = (int(case["end_coordinate"][0]), int(case["end_coordinate"][1]))
     t0 = parse_time(case["start_time"])
@@ -231,14 +239,29 @@ def _solve_case(case: dict[str, Any]) -> dict[str, Any]:
                 reachable[v] = True
                 q.append(v)
     if not reachable[end_idx]:
-        return {"total_duration_sec": None, "arrival_time": None, "path": []}
+        return UNREACHABLE
+
+    # Compute a time horizon: the latest obstruction end time.
+    # After all obstructions expire, every edge is at factor 1.0, so a
+    # simple BFS-optimal path always exists.  Any valid answer must arrive
+    # before horizon + total_edge_durations * 2.
+    max_obs_end = t0
+    total_dur = 0.0
+    for arc_windows in windows:
+        for _, e, _ in arc_windows:
+            if e > max_obs_end:
+                max_obs_end = e
+    for _, _, _, d in arcs:
+        total_dur += d
+    # Allow generous headroom but still bounded
+    time_horizon = max_obs_end + total_dur * 2 + 3600
 
     # Free waiting loops: unobstructed incident edges can be cycled to burn time.
-    free_loops: list[list[tuple[str, int]]] = [[] for _ in range(n_nodes)]
+    free_loops: list[list[tuple[str, int, float]]] = [[] for _ in range(n_nodes)]
     for idx, (u, v, edge_id, duration) in enumerate(arcs):
         if duration > 0 and not windows[idx]:
             traversals = 1 if u == v else 2
-            free_loops[u].append((edge_id, traversals, int(duration) * traversals))
+            free_loops[u].append((edge_id, traversals, duration * traversals))
 
     node_boundaries: list[list[float]] = []
     for u in range(n_nodes):
@@ -250,37 +273,69 @@ def _solve_case(case: dict[str, Any]) -> dict[str, Any]:
         }
         node_boundaries.append(sorted(boundaries))
 
+    # For each node, compute the set of time boundary points where the
+    # outgoing-edge factor profile changes.  Two arrivals at the same node in
+    # the same "regime" (between the same pair of boundaries) produce
+    # identical outgoing behaviour, so the later one can be pruned.
+    # Arrivals in *different* regimes must both be explored.
+    node_regime_bounds: list[list[float]] = []
+    for u in range(n_nodes):
+        pts: set[float] = set()
+        for arc in arcs_by_node[u]:
+            for s in seg_starts[arc]:
+                if s != -INF:
+                    pts.add(s)
+            for e in seg_ends[arc]:
+                if e != INF:
+                    pts.add(e)
+        node_regime_bounds.append(sorted(pts))
+
+    # --- Dijkstra over (node, arrival_time) ---
     parent: dict[tuple[int, float], tuple[int | None, float | None, Any]] = {}
     heap: list[tuple[float, int, int]] = []
-    counter = itertools.count()
+    _cnt = 0
 
-    def push(time: float, node: int, prev_node: int | None, prev_time: float | None, action: Any) -> None:
-        key = (node, time)
+    def push(arrival: float, node: int, prev_node: int | None, prev_time: float | None, action: Any) -> None:
+        nonlocal _cnt
+        if arrival > time_horizon:
+            return
+        key = (node, arrival)
         if key not in parent:
             parent[key] = (prev_node, prev_time, action)
-        heapq.heappush(heap, (time, next(counter), node))
+            _cnt += 1
+            heapq.heappush(heap, (arrival, _cnt, node))
 
     push(t0, start_idx, None, None, None)
-    visited: set[tuple[int, float]] = set()
+    # Track which (node, regime_index) pairs we've already expanded.
+    visited_regime: set[tuple[int, int]] = set()
     best_time: float | None = None
     pops = 0
 
     while heap:
         t, _, u = heapq.heappop(heap)
         key = (u, t)
-        if key in visited:
+
+        # Determine which regime this arrival falls into.
+        regime = bisect_right(node_regime_bounds[u], t)
+        regime_key = (u, regime)
+        if regime_key in visited_regime:
             continue
-        visited.add(key)
+        visited_regime.add(regime_key)
         pops += 1
 
-        # Safety valve for temporally unreachable destinations: without a
-        # destination state the time-expanded graph is infinite.
+        # Safety valves
         if pops > MAX_POPS:
-            return {"total_duration_sec": None, "arrival_time": None, "path": []}
+            return UNREACHABLE
+        if pops & 0xFF == 0 and _time.monotonic() - wall_start > CASE_BUDGET_SECS:
+            return UNREACHABLE
 
         if u == end_idx:
             best_time = t
             break
+
+        # Record this key for path reconstruction
+        if key not in parent:
+            parent[key] = (None, None, None)
 
         # Normal edge traversals.
         for arc in arcs_by_node[u]:
@@ -289,7 +344,8 @@ def _solve_case(case: dict[str, Any]) -> dict[str, Any]:
             )
             if arrival is None:
                 continue
-            push(arrival, arcs[arc][1], u, t, ("edge", arcs[arc][2]))
+            v = arcs[arc][1]
+            push(arrival, v, u, t, ("edge", arcs[arc][2]))
 
         # "Waiting" by cycling on unobstructed loops until the next time the
         # environment at this node changes (an outgoing obstruction boundary).
@@ -305,7 +361,7 @@ def _solve_case(case: dict[str, Any]) -> dict[str, Any]:
                     push(jump_time, u, u, t, ("loop", edge_id, loops * traversals))
 
     if best_time is None:
-        return {"total_duration_sec": None, "arrival_time": None, "path": []}
+        return UNREACHABLE
 
     path: list[str] = []
     node: int | None = end_idx

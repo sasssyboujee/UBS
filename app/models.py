@@ -119,8 +119,14 @@ class AdaptOutput(BaseModel):
     priority: int
 
 
+class SloOutput(BaseModel):
+    availability: float = 0.0
+    p95LatencyMs: int = 0
+
+
 class SolveResponse(BaseModel):
     adaptOutput: AdaptOutput
+    sloOutput: SloOutput | None = None
 
 
 class UserInput(BaseModel):
@@ -138,8 +144,26 @@ class AdaptInputInner(BaseModel):
     metadata: MetadataInput
 
 
+class Heartbeat(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    service: str = ""
+    timestamp: int = 0
+    latencyMs: int = 0
+    status: str = ""
+
+
+class SloQuery(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    service: str = ""
+    since: int = 0
+
+
 class DecodedPayload(BaseModel):
     adaptInput: AdaptInputInner
+    heartbeats: list[Heartbeat] = Field(default_factory=list)
+    sloQuery: SloQuery | None = None
 
 
 # ---------------------------------------------------------------------------

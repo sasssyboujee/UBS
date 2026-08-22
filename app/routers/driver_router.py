@@ -1,9 +1,8 @@
 
-from datetime import datetime, timezone
-from heapq import heappush, heappop
 from collections import defaultdict
+from datetime import UTC, datetime
+from heapq import heappop, heappush
 from math import inf
-
 
 from fastapi import APIRouter
 
@@ -12,13 +11,13 @@ router = APIRouter()
 
 def parse_time(s: str) -> float:
     """ISO-8601 timestamp -> Unix seconds."""
-    return datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
+    return datetime.fromisoformat(s).timestamp()
 
 
 def iso_time(ts: float) -> str:
     """Unix seconds -> ISO-8601 UTC timestamp."""
     return (
-        datetime.fromtimestamp(ts, tz=timezone.utc)
+        datetime.fromtimestamp(ts, tz=UTC)
         .isoformat(timespec="seconds")
         .replace("+00:00", "Z")
     )
@@ -151,9 +150,7 @@ def travel_time(
             remaining_distance = 0.0
         else:
             elapsed = next_boundary - current_time
-
-            if elapsed < 0:
-                elapsed = 0
+            elapsed = max(elapsed, 0)
 
             distance_covered = (
                 elapsed * speed_factor / base_duration
