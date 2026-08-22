@@ -1,15 +1,15 @@
+import asyncio
 import logging
-import json
+from contextlib import asynccontextmanager
+
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
-from app.mcp_server2 import mcp
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse
 
-from app.mcp_server import handle_rpc, sse_endpoint_stream, sse_response_stream
+from app.mcp_server2 import mcp_http_app, warm_up
 from app.models import (
     HealthResponse,
     HelloRequest,
@@ -19,19 +19,24 @@ from app.routers import routers
 
 logger = logging.getLogger("uvicorn.error")
 
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    # The mounted FastMCP app starts its session manager in its own lifespan;
+    # FastAPI does not propagate lifespans into mounts, so run it explicitly.
+    async with mcp_http_app.router.lifespan_context(mcp_http_app):
+        asyncio.create_task(asyncio.to_thread(warm_up))
+        yield
+
+
 app = FastAPI(
     title="UBS Global Coding Challenge API",
     description="Production-grade FastAPI service",
     version="1.0.0",
+    lifespan=lifespan,
 )
 for router in routers:
     app.include_router(router)
-
-@app.get("/mcp")
-async def redirect_mcp_root():
-    return RedirectResponse(url="/mcp/sse")
-
-app.mount("/mcp", mcp.sse_app())
 
 # Strict Security: Enforce CORS
 app.add_middleware(
@@ -83,33 +88,10 @@ async def say_hello(request: HelloRequest):
     return HelloResponse(greeting=f"Hello, {request.name}!")
 
 
-@app.api_route("/mcp", methods=["GET", "POST"])
-async def mcp_endpoint(request: Request):
-    accept = request.headers.get("accept", "")
-
-    if request.method == "GET":
-        if "text/event-stream" in accept:
-            return StreamingResponse(sse_endpoint_stream(), media_type="text/event-stream")
-        return JSONResponse({"service": "nursery-mcp", "status": "ok"})
-
-    # POST
-    try:
-        body = await request.json()
-    except json.JSONDecodeError:
-        return JSONResponse(
-            {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}},
-            status_code=400,
-        )
-
-    result = handle_rpc(body)
-
-    if result is None:
-        return JSONResponse(content=None, status_code=202)
-
-    if "text/event-stream" in accept:
-        return StreamingResponse(sse_response_stream(result), media_type="text/event-stream")
-
-    return JSONResponse(content=result)
+# MCP endpoint for the Tool-box / Nursery challenge (Streamable HTTP, JSON-RPC).
+# Registered last so it acts as a catch-all without shadowing any route above;
+# the FastMCP app itself serves /mcp (POST JSON-RPC, GET SSE handshake).
+app.mount("/", mcp_http_app)
 
 
 if __name__ == "__main__":

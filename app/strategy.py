@@ -999,7 +999,7 @@ def _lockdown_nit_move(
 # fold everything else. Unknown codenames stay in a conservative exploration
 # mode until the learned model has seen enough showdowns to identify monsters.
 
-_P3_MIN_OBS = 10
+_P3_MIN_OBS = 4
 _P3_MONSTER = 0.85
 _P3_TOP_MARGIN = 0.03
 _P3_STEAL = 0.74
@@ -1104,7 +1104,7 @@ def _phase3_move(req: MoveRequest, legal: set[str], codename: str) -> MoveRespon
         # Exploration: keep pots tiny.
         if to_call == 0:
             return MoveResponse(action="check")
-        if to_call <= 2 and "call" in legal:
+        if to_call <= 4 and "call" in legal:
             return MoveResponse(action="call")
         if "fold" in legal:
             return MoveResponse(action="fold")
@@ -1227,10 +1227,16 @@ def _degen_move(req: MoveRequest, legal: set[str], codename: str) -> MoveRespons
     max_to = req.max_raise_to if req.max_raise_to is not None else stack
 
     is_pair = community is not None and card == community
-    is_good = is_pair or card >= 10
+    
+    # In Phase 3 (multiway), we need a stronger card to go ham.
+    good_card_threshold = 10 if len(req.players) <= 2 else 12
+    is_good = is_pair or card >= good_card_threshold
 
-    # Go ham with a good card or 50% coin flip bluff
-    if is_good or _chance(req, "degen_coin_flip", 50):
+    # In Phase 3 (multiway), 50% bluff is too high against 5 players.
+    bluff_chance = 50 if len(req.players) <= 2 else 15
+
+    # Go ham with a good card or coin flip bluff
+    if is_good or _chance(req, "degen_coin_flip", bluff_chance):
         if "raise" in legal:
             return MoveResponse(action="raise", amount=max_to)
         if "bet" in legal:
@@ -1294,10 +1300,9 @@ def choose_action(req: MoveRequest) -> MoveResponse:
 
     codename = req.table_rule or "standard"
 
-    if req.phase >= 2 or codename != "standard" or len(req.players) > 2:
+    if (req.phase >= 2 or codename != "standard" or len(req.players) > 2) and not _is_safe(req):
         # Below safe threshold: play a disruptive, anti-bot line.
-        if not _is_safe(req):
-            return _legalize(_degen_move(req, legal, codename), req, legal)
+        return _legalize(_degen_move(req, legal, codename), req, legal)
 
     if req.phase >= 3 or len(req.players) > 2:
         resp = _phase3_move(req, legal, codename)
