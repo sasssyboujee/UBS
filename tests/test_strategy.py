@@ -3,7 +3,9 @@ import pytest
 from app.models import HandResult, MoveRequest, PlayerState
 from app.strategy import (
     _codename_observations,
+    _degen_move,
     _live_opponents,
+    _offtree_raise,
     _post_reveal_opp_weights,
     _post_reveal_opp_weights_observed,
     _record_recent_hands,
@@ -461,3 +463,71 @@ def test_phase3_unknown_rule_stays_cautious():
     )
     response = choose_action(request)
     assert response.action == "fold"
+
+
+# ---------------------------------------------------------------------------
+# Anti-bot counter-measures (off-tree sizing, polarization)
+# ---------------------------------------------------------------------------
+
+
+def test_offtree_raise_stays_in_legal_window():
+    request = MoveRequest(
+        match_id="siz-match",
+        round="post_reveal",
+        your_number=9,
+        pot=30,
+        your_stack=200,
+        min_raise_to=20,
+        max_raise_to=200,
+    )
+    for key in ("a", "b", "c", "d", "e", "f", "g", "h"):
+        for mode in ("value", "bluff", "mixed"):
+            amount = _offtree_raise(request, 0.6, key, mode)
+            assert 20 <= amount <= 200
+
+
+def test_offtree_raise_is_deterministic():
+    request = MoveRequest(match_id="det", round="post_reveal", pot=40, your_stack=200,
+                          min_raise_to=10, max_raise_to=200)
+    assert _offtree_raise(request, 0.5, "k", "value") == _offtree_raise(request, 0.5, "k", "value")
+
+
+def test_degen_move_monster_is_aggressive_and_legal():
+    request = MoveRequest(
+        match_id="dg",
+        phase=2,
+        table_rule="mystery",
+        round="pre_reveal",
+        your_number=13,
+        your_seat=0,
+        button_seat=1,
+        to_call=0,
+        pot=3,
+        your_stack=200,
+        min_raise_to=4,
+        max_raise_to=200,
+        legal_actions=["check", "raise"],
+    )
+    response = _degen_move(request, set(request.legal_actions), "mystery")
+    assert response.action == "raise"
+    assert response.amount is not None and 4 <= response.amount <= 200
+
+
+def test_degen_move_junk_stays_legal():
+    request = MoveRequest(
+        match_id="dg",
+        phase=2,
+        table_rule="mystery",
+        round="pre_reveal",
+        your_number=5,
+        your_seat=0,
+        button_seat=1,
+        to_call=0,
+        pot=3,
+        your_stack=200,
+        min_raise_to=4,
+        max_raise_to=200,
+        legal_actions=["check", "raise"],
+    )
+    response = _degen_move(request, set(request.legal_actions), "mystery")
+    assert response.action in request.legal_actions

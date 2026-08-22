@@ -606,6 +606,60 @@ def _chance(req: MoveRequest, key: str, percent: int) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Anti-bot counter-measures (adapted from solver-bot exploitation theory)
+# ---------------------------------------------------------------------------
+# The coordinator's bots key their decisions on clean bet sizes and static
+# opening ranges. We break both assumptions:
+#
+#   * Off-tree sizing: we never bet a round pot fraction. Every raise is
+#     jittered and occasionally snaps to an awkward stab/overbet, so the
+#     opponent's size -> strength translation carries noise (11%/14% stabs,
+#     2.15x click-backs, micro-donks).
+#   * Range polarization: junk is occasionally raised as if it were premium
+#     (and a monster sometimes flat-calls as a trap), corrupting the opponent's
+#     static range model so its bluff-catchers over-call once we revert to
+#     tight value.
+#   * Forced multiway pots: in six-seat play we flat-call with opponents still
+#     behind to keep pots multiway, where our exact multinomial equity model
+#     beats the opponent bots' approximations.
+#
+# Everything is deterministic (seeded by match/hand/round), so a given state
+# always yields the same action, and every amount is clamped to the legal
+# window before it is returned.
+
+_OFFTREE_OVERBETS = (1.15, 1.35, 1.60, 2.15)
+_OFFTREE_STABS = (0.11, 0.14, 0.18, 0.27)
+
+
+def _seed(req: MoveRequest, key: str) -> int:
+    """Deterministic 32-bit seed for a (match, hand, round, key) node."""
+    raw = f"{req.match_id}:{req.table_rule}:{req.hand_number}:{req.round}:{key}"
+    return zlib.crc32(raw.encode("utf-8"))
+
+
+def _offtree_raise(req: MoveRequest, pot_fraction: float, key: str, mode: str = "mixed") -> int:
+    """Total raise/bet amount for the round, with deliberately off-tree sizing.
+
+    ``mode`` controls the occasional awkward snap: "value" overbets, "bluff"
+    micro-stabs, anything else stays a jittered ``pot_fraction``. The result is
+    always inside ``[min_raise_to, max_raise_to]`` when those bounds are known.
+    """
+    our_bet = _our_bet_this_round(req)
+    pot = req.pot or 0
+    r = _seed(req, key)
+    if mode == "value" and r % 7 == 0:
+        frac = _OFFTREE_OVERBETS[r % len(_OFFTREE_OVERBETS)]
+    elif mode == "bluff" and r % 7 == 0:
+        frac = _OFFTREE_STABS[r % len(_OFFTREE_STABS)]
+    else:
+        frac = pot_fraction * (1.0 + (r % 21 - 10) / 100.0)  # ±10%
+    target = our_bet + round(pot * frac)
+    if req.min_raise_to is None or req.max_raise_to is None:
+        return target
+    return max(req.min_raise_to, min(target, req.max_raise_to))
+
+
+# ---------------------------------------------------------------------------
 # Standard-rule strategy
 # ---------------------------------------------------------------------------
 
@@ -1122,9 +1176,14 @@ def _phase3_move(req: MoveRequest, legal: set[str], codename: str) -> MoveRespon
                 
         elif good:
             if to_call == 0:
-                if "bet" in legal and _chance(req, "p3_bet", 50):
-                    target = _our_bet_this_round(req) + max(3, pot // 3)
-                    return MoveResponse(action="bet", amount=_phase3_raise_to(req, target))
+                # Force multiway in position: with opponents still to act we
+                # flat to keep the pot multiway (our exact equity model beats
+                # their approximations); last to act we value-bet off-tree.
+                if _opponents_behind(req) > 0:
+                    return MoveResponse(action="check")
+                if "bet" in legal and _chance(req, "p3_bet", 55):
+                    amount = _offtree_raise(req, 0.5, "p3_good", "value")
+                    return MoveResponse(action="bet", amount=_phase3_raise_to(req, amount))
                 return MoveResponse(action="check")
                 
             if to_call <= max(stack // 4, 10) and "call" in legal:
@@ -1137,8 +1196,8 @@ def _phase3_move(req: MoveRequest, legal: set[str], codename: str) -> MoveRespon
         else:
             if to_call == 0:
                 if _opponents_behind(req) == 0 and n_opp <= 2 and "bet" in legal and _chance(req, "p3_steal", 30):
-                    target = _our_bet_this_round(req) + max(3, pot // 2)
-                    return MoveResponse(action="bet", amount=_phase3_raise_to(req, target))
+                    amount = _offtree_raise(req, 0.6, "p3_steal", "bluff")
+                    return MoveResponse(action="bet", amount=_phase3_raise_to(req, amount))
                 return MoveResponse(action="check")
                 
             if to_call <= 1 and "call" in legal:
@@ -1152,6 +1211,65 @@ def _phase3_move(req: MoveRequest, legal: set[str], codename: str) -> MoveRespon
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
+
+
+def _degen_move(req: MoveRequest, legal: set[str], codename: str) -> MoveResponse:
+    """Below-safe-threshold disrupt line (phases 2+).
+
+    Builds a lead quickly while attacking the opponent bot's static range and
+    sizing assumptions rather than telegraphing a fixed 50% max-shove:
+
+      * monsters (pair or 12+) keep the variance spike but vary the size so the
+        opponent can't read a fixed "max shove = top range" signal;
+      * good cards (10-11) raise with off-tree (overbet-leaning) sizing and
+        occasionally flat-call a small bet as a trap;
+      * junk bluffs with irregular sizing a minority of the time, so a raise is
+        never a pure strength signal and never a clean size.
+    """
+    card = req.your_number or 1
+    community = req.community_number
+    to_call = req.to_call or 0
+    stack = req.your_stack or 0
+    max_to = req.max_raise_to if req.max_raise_to is not None else stack
+
+    is_pair = community is not None and card == community
+
+    if is_pair or card >= 12:
+        amount = max_to if _chance(req, "degen_monster_shove", 70) else _offtree_raise(req, 1.8, "degen_monster", "value")
+        if "raise" in legal:
+            return MoveResponse(action="raise", amount=amount)
+        if "bet" in legal:
+            return MoveResponse(action="bet", amount=amount)
+        if "call" in legal:
+            return MoveResponse(action="call")
+        return MoveResponse(action="check")
+
+    if card >= 10:
+        if to_call and to_call <= 6 and _chance(req, "degen_trap", 18) and "call" in legal:
+            return MoveResponse(action="call")
+        amount = _offtree_raise(req, 1.3, "degen_value", "value")
+        if "raise" in legal:
+            return MoveResponse(action="raise", amount=amount)
+        if "bet" in legal:
+            return MoveResponse(action="bet", amount=amount)
+        if "call" in legal:
+            return MoveResponse(action="call")
+        return MoveResponse(action="check")
+
+    if _chance(req, "degen_bluff", 30):
+        amount = _offtree_raise(req, 0.8, "degen_bluff", "bluff")
+        if "raise" in legal:
+            return MoveResponse(action="raise", amount=amount)
+        if "bet" in legal:
+            return MoveResponse(action="bet", amount=amount)
+
+    if to_call == 0:
+        return MoveResponse(action="check")
+    if to_call <= 2 and "call" in legal:
+        return MoveResponse(action="call")
+    if "fold" in legal:
+        return MoveResponse(action="fold")
+    return MoveResponse(action="call")
 
 
 def _legalize(resp: MoveResponse, req: MoveRequest, legal: set[str]) -> MoveResponse:
@@ -1189,26 +1307,9 @@ def choose_action(req: MoveRequest) -> MoveResponse:
 
     if req.phase >= 2 or codename != "standard" or len(req.players) > 2:
         delta = _our_chip_delta(req)
-        # Below safe threshold: play degen
+        # Below safe threshold: play a disruptive, anti-bot line.
         if delta < 75:
-            card = req.your_number or 1
-            community = req.community_number
-            is_good = card >= 10 or (community is not None and card == community)
-            
-            target = req.max_raise_to if req.max_raise_to is not None else (req.your_stack or 0)
-            
-            if is_good or _chance(req, "degen_flip", 50):
-                if "raise" in legal:
-                    return _legalize(MoveResponse(action="raise", amount=target), req, legal)
-                if "bet" in legal:
-                    return _legalize(MoveResponse(action="bet", amount=target), req, legal)
-                if "call" in legal:
-                    return _legalize(MoveResponse(action="call"), req, legal)
-            else:
-                if (req.to_call or 0) == 0 and "check" in legal:
-                    return _legalize(MoveResponse(action="check"), req, legal)
-                if "fold" in legal:
-                    return _legalize(MoveResponse(action="fold"), req, legal)
+            return _legalize(_degen_move(req, legal, codename), req, legal)
 
     if req.phase >= 3 or len(req.players) > 2:
         resp = _phase3_move(req, legal, codename)
