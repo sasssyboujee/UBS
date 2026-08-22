@@ -1,5 +1,5 @@
 import logging
-
+import json
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.encoders import jsonable_encoder
@@ -77,7 +77,6 @@ async def say_hello(request: HelloRequest):
 
 @app.api_route("/mcp", methods=["GET", "POST"])
 async def mcp_endpoint(request: Request):
-    """Tool-box / School Days challenge: minimal MCP server (Streamable HTTP)."""
     accept = request.headers.get("accept", "")
 
     if request.method == "GET":
@@ -85,18 +84,25 @@ async def mcp_endpoint(request: Request):
             return StreamingResponse(sse_endpoint_stream(), media_type="text/event-stream")
         return JSONResponse({"service": "school-days-mcp", "status": "ok"})
 
-    # POST: actual JSON-RPC traffic (initialize, tools/list, tools/call, ...)
-    body = await request.json()
+    # POST
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return JSONResponse(
+            {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}},
+            status_code=400,
+        )
+
     result = handle_rpc(body)
 
     if result is None:
-        # Notification: no response body expected per JSON-RPC spec.
         return JSONResponse(content=None, status_code=202)
 
     if "text/event-stream" in accept:
         return StreamingResponse(sse_response_stream(result), media_type="text/event-stream")
 
     return JSONResponse(content=result)
+
 
 if __name__ == "__main__":
     uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True)
