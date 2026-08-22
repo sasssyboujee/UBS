@@ -1,3 +1,8 @@
-from . import apigateway, ghost_chains, showdown
+from . import apigateway_router, ghost_chains, kan_cheong, showdown_router
 
-routers = [apigateway.router, showdown.router, ghost_chains.router]
+routers = [
+    apigateway_router.router,
+    showdown_router.router,
+    ghost_chains.router,
+    kan_cheong.router,
+]
