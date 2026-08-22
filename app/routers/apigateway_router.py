@@ -94,6 +94,7 @@ def _compute_slo(
             hb
             for hb in heartbeats
             if hb.service == slo_query.service
+            and hb.timestamp >= slo_query.since
         ]
 
     if not window:
@@ -116,7 +117,7 @@ def _compute_slo(
         for hb in window
     )
 
-    index = math.floor(0.95 * (len(latencies) - 1))
+    index = math.ceil(0.95 * len(latencies)) - 1
     p95_latency = latencies[index]
 
     return SloOutput(
