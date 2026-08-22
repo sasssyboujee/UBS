@@ -265,3 +265,49 @@ def test_choose_action_unknown_rule_pre_reveal_stays_cautious_without_data():
     response = choose_action(request)
     # No data yet: do not raise blind under an unknown rule.
     assert response.action == "check"
+
+
+def test_learning_accepts_name_winners_and_string_numbers():
+    _reset_learning()
+    hands = [
+        HandResult(
+            hand_number=i,
+            community_number=7,
+            winners=["you"],
+            shown_numbers={"you": "2", "Gaston": "13"},
+        )
+        for i in range(1, 7)
+    ]
+    request = MoveRequest(
+        match_id="names-match",
+        table_rule="names_rule",
+        leg_number=1,
+        total_legs=4,
+        your_seat=0,
+        button_seat=1,
+        recent_hands=hands,
+    )
+    _record_recent_hands(request)
+    assert _codename_observations("names_rule") == 6
+    assert _rule_showdown(2, 13, 7, "names_rule") == 1.0
+    assert _rule_showdown(13, 2, 7, "names_rule") == 0.0
+
+
+def test_recent_hands_dedupe_without_hand_numbers():
+    _reset_learning()
+    hand = HandResult(
+        community_number=7,
+        winners=[0],
+        shown_numbers={"you": 2, "opp": 13},
+    )
+    request = MoveRequest(
+        match_id="nohand-match",
+        table_rule="nohand_rule",
+        leg_number=1,
+        total_legs=4,
+        your_seat=0,
+        button_seat=1,
+        recent_hands=[hand, hand],
+    )
+    _record_recent_hands(request)
+    assert _codename_observations("nohand_rule") == 1

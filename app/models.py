@@ -42,9 +42,9 @@ class HandResult(BaseModel):
 
     hand_number: int = 0
     community_number: int | None = None
-    winners: list[int] = Field(default_factory=list)
+    winners: list[int | str] = Field(default_factory=list)
     pot: int = 0
-    shown_numbers: dict[str, int] = Field(default_factory=dict)
+    shown_numbers: dict[str, int | str] = Field(default_factory=dict)
     actions: list[ActionLog] = Field(default_factory=list)
 
 

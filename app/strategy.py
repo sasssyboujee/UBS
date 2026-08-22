@@ -34,17 +34,18 @@ _POWER_EPS = 0.02
 # codename -> {"wins": [float; 26], "games": [float; 26]}
 _RULE_STATS: dict[str, dict[str, list[float]]] = {}
 
-# (match_id, leg_number) -> highest hand_number already folded into the model.
+# (match_id, leg_number) -> set of content hashes already folded into the model.
 # recent_hands overlaps between requests, so without this every showdown would
-# be counted many times.
-_SEEN_MAX_HAND: OrderedDict[tuple[str, int], int] = OrderedDict()
+# be counted many times. Hashing content (rather than tracking hand_number)
+# keeps learning working even if the coordinator omits hand numbers.
+_SEEN_HANDS: OrderedDict[tuple[str, int], set[int]] = OrderedDict()
 _SEEN_MAX_KEYS = 32
 
 
 def _reset_learning() -> None:
     """Clear all learned state (used by tests)."""
     _RULE_STATS.clear()
-    _SEEN_MAX_HAND.clear()
+    _SEEN_HANDS.clear()
 
 
 def _hand_index(card: int, paired: bool) -> int:
@@ -101,21 +102,50 @@ def _bump(stats: dict[str, list[float]], winner_idx: int, loser_idx: int, amount
     stats["games"][loser_idx] += 1.0
 
 
+def _to_int(value) -> int | None:
+    """Coerce a model value (int, numeric string) to int; None on garbage."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        try:
+            return int(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
 def _record_hand(req: MoveRequest, codename: str, hand) -> None:
-    """Fold one showdown result into the codename model."""
-    if hand.community_number is None:
+    """Fold one showdown result into the codename model.
+
+    The coordinator's exact field shapes vary between phases (winners as seats
+    or names, numbers as ints or strings), so this is deliberately tolerant.
+    """
+    comm = _to_int(hand.community_number)
+    if comm is None:
         return
     shown = hand.shown_numbers or {}
     if len(shown) < 2:
         return
-    our_num = shown.get("you")
+
+    # Our number: prefer the "you" key, fall back to our seat as a string.
+    our_num = _to_int(shown.get("you"))
+    if our_num is None:
+        our_num = _to_int(shown.get(str(req.your_seat)))
     if our_num is None:
         return
-    opp_num = next((num for name, num in shown.items() if name != "you"), None)
+
+    # Opponent's number: the other key in shown_numbers.
+    opp_key = next(
+        (k for k in shown if k not in ("you", str(req.your_seat))), None
+    )
+    if opp_key is None:
+        return
+    opp_num = _to_int(shown.get(opp_key))
     if opp_num is None:
         return
 
-    comm = hand.community_number
     our_idx = _hand_index(our_num, our_num == comm)
     opp_idx = _hand_index(opp_num, opp_num == comm)
 
@@ -123,43 +153,58 @@ def _record_hand(req: MoveRequest, codename: str, hand) -> None:
     if not winners:
         return
 
+    # Winners may be seats (ints) or names (strings); accept both.
+    our_markers = {req.your_seat, "you", str(req.your_seat)}
+    opp_markers = {1 - req.your_seat, opp_key}
+    we_won = bool(winners & our_markers)
+    opp_won = bool(winners & opp_markers)
+    if not we_won and not opp_won:
+        return
+
     stats = _stats(codename)
-    if len(winners) == 2:
+    if we_won and opp_won:
         # Split pot: both hands have equal showdown value.
         _bump(stats, our_idx, opp_idx, 0.5)
         _bump(stats, opp_idx, our_idx, 0.5)
-    elif req.your_seat in winners:
+    elif we_won:
         _bump(stats, our_idx, opp_idx, 1.0)
     else:
         _bump(stats, opp_idx, our_idx, 1.0)
 
 
+def _hand_hash(hand) -> int:
+    shown = tuple(sorted((str(k), str(v)) for k, v in (hand.shown_numbers or {}).items()))
+    winners = tuple(sorted(str(w) for w in (hand.winners or [])))
+    return hash((hand.hand_number, hand.community_number, hand.pot, shown, winners))
+
+
 def _record_recent_hands(req: MoveRequest) -> None:
     """Learn from ``recent_hands``, skipping hands we have already seen.
 
-    Hands are deduplicated per (match_id, leg) using the highest hand_number
-    processed so far; ``recent_hands`` overlaps heavily between requests.
+    Deduplication is content-based per (match_id, leg): ``recent_hands``
+    overlaps heavily between requests, and ``hand_number`` may be absent in
+    some coordinator payloads.
     """
     codename = req.table_rule
     if not codename or codename == "standard":
         return
 
     key = (req.match_id or "", req.leg_number or 0)
-    seen = _SEEN_MAX_HAND.get(key, 0)
-    max_hand = seen
+    seen = _SEEN_HANDS.get(key)
+    if seen is None:
+        seen = set()
+        _SEEN_HANDS[key] = seen
 
     for hand in req.recent_hands or []:
-        hand_no = hand.hand_number or 0
-        if hand_no <= seen:
+        digest = _hand_hash(hand)
+        if digest in seen:
             continue
-        max_hand = max(max_hand, hand_no)
+        seen.add(digest)
         _record_hand(req, codename, hand)
 
-    if max_hand > seen:
-        _SEEN_MAX_HAND[key] = max_hand
-        _SEEN_MAX_HAND.move_to_end(key)
-        while len(_SEEN_MAX_HAND) > _SEEN_MAX_KEYS:
-            _SEEN_MAX_HAND.popitem(last=False)
+    _SEEN_HANDS.move_to_end(key)
+    while len(_SEEN_HANDS) > _SEEN_MAX_KEYS:
+        _SEEN_HANDS.popitem(last=False)
 
 
 # ---------------------------------------------------------------------------
@@ -460,9 +505,9 @@ def _rule_pre_reveal(req: MoveRequest, legal: set[str], codename: str) -> MoveRe
     obs = _codename_observations(codename)
 
     if to_call == 0:
-        if obs >= 6 and "raise" in legal:
+        if obs >= 4 and "raise" in legal:
             equity = _equity_pre(card, codename)
-            if equity > 0.58:
+            if equity > 0.56:
                 return MoveResponse(action="raise", amount=_clamp_raise(req, 0.6))
             if equity < 0.35 and _chance(req, "bluff_pre_rule", 10):
                 return MoveResponse(action="raise", amount=_clamp_raise(req, 0.5))
@@ -471,9 +516,9 @@ def _rule_pre_reveal(req: MoveRequest, legal: set[str], codename: str) -> MoveRe
     equity = _range_equity_for(card, None, _pre_reveal_opp_weights(), codename)
     odds = pot_odds(to_call, pot)
 
-    if obs < 6:
+    if obs < 4:
         # Exploration: pay small raises to reach showdown and learn the rule.
-        if to_call <= max(3, int(0.08 * stack)) and "call" in legal:
+        if to_call <= max(3, int(0.10 * stack)) and "call" in legal:
             return MoveResponse(action="call")
         if equity > odds + 0.10 and "call" in legal:
             return MoveResponse(action="call")
@@ -500,18 +545,21 @@ def _rule_post_reveal(req: MoveRequest, legal: set[str], codename: str) -> MoveR
     equity = _equity_post(card, community, codename)
 
     if to_call == 0:
-        if "bet" in legal and equity > 0.6:
+        if obs >= 3 and "bet" in legal and equity > 0.58:
             return MoveResponse(action="bet", amount=_clamp_raise(req, 0.5))
-        if "bet" in legal and equity < 0.32 and _chance(req, "bluff_post_rule", 10):
+        if obs >= 3 and "bet" in legal and equity < 0.32 and _chance(req, "bluff_post_rule", 10):
             return MoveResponse(action="bet", amount=_clamp_raise(req, 0.5))
         return MoveResponse(action="check")
 
     last_opp = _last_opponent_action(req)
-    opp_weights = _post_reveal_opp_weights(community, last_opp == "raise", codename)
+    # The opponent plays the same way in every leg, regardless of the rule, so
+    # estimate THEIR range with the standard model while evaluating OUR hand
+    # with the learned rule.
+    opp_weights = _post_reveal_opp_weights(community, last_opp == "raise", "standard")
     range_equity = _range_equity_for(card, community, opp_weights, codename)
     odds = pot_odds(to_call, pot)
 
-    if obs < 6 and to_call <= max(3, int(0.08 * stack)) and "call" in legal:
+    if obs < 4 and to_call <= max(3, int(0.10 * stack)) and "call" in legal:
         return MoveResponse(action="call")
 
     if range_equity > odds + 0.03:
