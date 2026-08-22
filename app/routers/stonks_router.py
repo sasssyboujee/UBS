@@ -1,5 +1,5 @@
 import heapq
-from typing import Any, Dict, List
+from typing import Any
 
 from fastapi import APIRouter
 
@@ -37,7 +37,7 @@ def solve_stonks_case(test_case: Dict[str, Any]) -> List[str]:
     visited: Dict[tuple, int] = {}
 
     best_cash = capital
-    best_actions: List[str] = []
+    best_actions: list[str] = []
 
     while pq:
         neg_cash, energy_left, curr_year, inv_tuple, avail_tuple, actions = (

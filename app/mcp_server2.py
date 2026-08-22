@@ -23,6 +23,7 @@ import concurrent.futures
 import hashlib
 import heapq
 import json
+import logging
 import math
 import os
 import re
@@ -40,7 +41,7 @@ from pydantic import Field
 # ----------------------------------------------------------------------
 
 TOKEN_BUDGET = 900          # hard ceiling counted by the judge (o200k_base)
-FILL_TARGET = 640           # we stop filling at this many tokens
+FILL_TARGET = 700           # we stop filling at this many tokens
 _ENCODING = tiktoken.get_encoding("o200k_base")
 
 FETCH_TIMEOUT = 6.0         # per-request network timeout
@@ -526,48 +527,37 @@ def recall(question: Any, materials: Any = None) -> list[str]:
     idf, vectors, chunks = _get_rag(docs)
     qv = _embed_query(q, idf)
 
-    scored: list[tuple[float, int, int, str]] = []
+    scored: list[tuple[float, float, float, int, int, str]] = []
     for (doc_i, text), vec in zip(chunks, vectors):
         cosine = _dot(qv, vec)
         lexical = _lexical_score(text, terms)
-        scored.append((0.5 * cosine + lexical, _token_count(text), doc_i, text))
-    scored.sort(key=lambda x: (-x[0], x[1]))
+        scored.append((0.5 * cosine + lexical, cosine, lexical, _token_count(text), doc_i, text))
 
-    if not scored or scored[0][0] <= 0:
-        # No signal at all: hand back the shortest chunk so the android
-        # still gets something to read.
-        if not scored:
-            return []
-        return [min((c for _, _, _, c in scored), key=_token_count)]
+    if not scored:
+        return []
 
-    # Best chunk per document, for the top-doc / runner-up split.
-    doc_best: dict[int, tuple[float, int, str]] = {}
-    for s, tok, doc_i, text in scored:
-        cur = doc_best.get(doc_i)
-        if cur is None or (s, -tok) > (cur[0], -cur[1]):
-            doc_best[doc_i] = (s, tok, text)
-    ranked_docs = sorted(doc_best, key=lambda di: (-doc_best[di][0], doc_best[di][1]))
-    top_doc = ranked_docs[0]
+    max_lex = max(item[2] for item in scored)
+    if max_lex > 0:
+        # Precision path: a lexical (exact/bridge/prefix) signal exists, so rank
+        # by the combined score across ALL documents (a wrong single-doc route
+        # must not drop the fact).
+        scored.sort(key=lambda x: (-x[0], -x[2], x[3]))
+    else:
+        # Heavy-paraphrase fallback: rely on the embedding (cosine) similarity and
+        # return the most relevant passages so the fact is not lost to a single
+        # short-chunk fallback.
+        scored.sort(key=lambda x: (-x[1], x[3]))
 
     selected: list[str] = []
     total = 0
-    for s, tok, doc_i, text in scored:
-        if doc_i != top_doc:
-            continue
+    for combined, cosine, lexical, tok, doc_i, text in scored:
         if total >= FILL_TARGET:
             break
-        if tok < 40 and not re.search(r"[.!?]", text):  # skip heading-only fragments
+        if tok < 40 and not re.search(r"[.!?]", text):
             continue
         if total + tok <= TOKEN_BUDGET:
             selected.append(text)
             total += tok
-
-    # Routing insurance: always carry the runner-up document's top passage.
-    if len(ranked_docs) >= 2:
-        s2, tok2, text2 = doc_best[ranked_docs[1]]
-        if s2 > 0 and not (tok2 < 40 and not re.search(r"[.!?]", text2)) and total + tok2 <= TOKEN_BUDGET:
-            selected.append(text2)
-            total += tok2
 
     return selected
 
@@ -1293,6 +1283,9 @@ def plan_outing(
 # FastMCP tool registrations
 # ----------------------------------------------------------------------
 
+_LOG = logging.getLogger("uvicorn.error")
+
+
 mcp = FastMCP(
     SERVER_NAME,
     instructions=(
@@ -1368,7 +1361,15 @@ def _recall_impl(
         q = " ".join(str(x) for x in q)
     if not q:
         raise ToolboxError("recall needs a 'question'")
-    return recall(q, materials)
+    passages = recall(q, materials)
+    _LOG.info(
+        "recall q=%r chunks=%d tokens=%d first=%r",
+        str(q)[:200],
+        len(passages),
+        sum(_token_count(x) for x in passages),
+        passages[0][:120] if passages else "",
+    )
+    return passages
 
 
 _RECALL_DESCRIPTION = (
@@ -1408,6 +1409,7 @@ def _navigate_impl(
         )
     hops = _as_int(hops_left or hops_remaining or remaining_hops or allowance or hops or max_hops or hop_allowance)
     path, _cost = _find_path(mid, start, dest, hops, visited, base_url, graph)
+    _LOG.info("navigate map=%.16s from=%s to=%s hops=%s next=%s", mid, start, dest, hops, path[0])
     return path[0]
 
 
