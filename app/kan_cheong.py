@@ -29,6 +29,7 @@ from math import ceil
 from typing import Any
 
 INF = float("inf")
+MAX_POPS = 200_000
 
 
 def parse_time(value: str) -> float:
@@ -206,6 +207,23 @@ def _solve_case(case: dict[str, Any]) -> dict[str, Any]:
             "path": [],
         }
 
+    # Quick connectivity check: obstructions can only make things worse, so a
+    # destination outside the start's connected component is unreachable.
+    adjacency: list[list[int]] = [[] for _ in range(n_nodes)]
+    for u, v, _, _ in arcs:
+        adjacency[u].append(v)
+        adjacency[v].append(u)
+    seen_nodes: set[int] = set()
+    stack = [start_idx]
+    while stack:
+        node = stack.pop()
+        if node in seen_nodes:
+            continue
+        seen_nodes.add(node)
+        stack.extend(adjacency[node])
+    if end_idx not in seen_nodes:
+        return {"total_duration_sec": None, "arrival_time": None, "path": []}
+
     # Free waiting loops: unobstructed incident edges can be cycled to burn time.
     free_loops: list[list[tuple[str, int]]] = [[] for _ in range(n_nodes)]
     for idx, (u, v, edge_id, duration) in enumerate(arcs):
@@ -236,6 +254,7 @@ def _solve_case(case: dict[str, Any]) -> dict[str, Any]:
     push(t0, start_idx, None, None, None)
     visited: set[tuple[int, float]] = set()
     best_time: float | None = None
+    pops = 0
 
     while heap:
         t, _, u = heapq.heappop(heap)
@@ -243,6 +262,12 @@ def _solve_case(case: dict[str, Any]) -> dict[str, Any]:
         if key in visited:
             continue
         visited.add(key)
+        pops += 1
+
+        # Safety valve for temporally unreachable destinations: without a
+        # destination state the time-expanded graph is infinite.
+        if pops > MAX_POPS:
+            return {"total_duration_sec": None, "arrival_time": None, "path": []}
 
         if u == end_idx:
             best_time = t
