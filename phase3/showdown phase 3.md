@@ -1,4 +1,5 @@
-Phase 3 — A Crowded Table
+# Phase 3 — A Crowded Table
+
 The full game rules and protocol are on the SHOWDOWN guide; the phase 2 guide covers table rules and legs. This page covers what phase 3 adds: six-seat tables and multiway play.
 
 More than one opponent
@@ -14,19 +15,20 @@ Nothing about position changes, there are just more seats. The button still deci
                   seat 0   seat 1   seat 2   seat 3   seat 4   seat 5
                  [BUTTON]
 
-forced bet           -        1        2        -        -        -
+forced bet - 1 2 - - -
 
-acts pre_reveal     4th      5th      6th      1st      2nd      3rd
-                                    (last)  (first)
+acts pre_reveal 4th 5th 6th 1st 2nd 3rd
+(last) (first)
 
-acts post_reveal    6th      1st      2nd      3rd      4th      5th
-                  (last)  (first)
+acts post_reveal 6th 1st 2nd 3rd 4th 5th
+(last) (first)
 Forced bets start just past the button: seat 1 pays 1, seat 2 pays 2. The button pays nothing, which is why it's the cheapest seat.
 Before the reveal, the order opens just past the seat that paid 2, so that seat acts last.
 After the reveal, the order opens just past the button, so the button acts last — with the most information.
 As heads-up, the order is not the same in both betting rounds. Over six hands you hold every seat's position once, so nobody gets a permanently good or bad seat.
 
-Phase 3: A Crowded Table — 600 pts
+# Phase 3: A Crowded Table — 600 pts
+
 Four legs again, 60 hands each, one table rule per leg. Each leg seats six players: you plus Dana, Miles, Theo, Rhea and Bram.
 
 It's the same five every leg, and they play very differently from one another. Their names are fixed and tell you nothing.
@@ -40,6 +42,6 @@ Per leg: chip delta ≥ +10 and top the table → 150 points. Accumulating again
 Glossary additions
 Terms added to the SHOWDOWN guide's glossary:
 
-Term	Meaning
-Multiway	A hand with three or more players still in it. Your number needs to beat all of them, not one.
-Top the table	Finish a leg with a strictly higher chip delta than every other seat. Ties don't count.
+Term Meaning
+Multiway A hand with three or more players still in it. Your number needs to beat all of them, not one.
+Top the table Finish a leg with a strictly higher chip delta than every other seat. Ties don't count.

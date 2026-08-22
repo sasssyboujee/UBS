@@ -13,26 +13,35 @@ arrival time
 ordered list of traversed edge_ids
 Please expose a POST endpoint on /kan-cheong-delivery-driver.
 
-Batch Request Format
+## Batch Request Format
+
 Each call to your endpoint sends multiple test cases in one request, as a JSON object mapping a caller-assigned case id to that case's input:
 
+```json
 {
   "case_1": { "...": "one case's input, see Input Format below" },
   "case_2": { "...": "another case's input" },
   "...": "..."
 }
+```
+
 Your endpoint must respond with a JSON object of the same shape - a map from the same case ids to that case's output (see Output Format below):
 
+```json
 {
   "case_1": { "...": "your answer to case_1" },
   "case_2": { "...": "your answer to case_2" },
   "...": "..."
 }
+```
+
 Cases are entirely independent of each other - solve and answer each one on its own. You do not need to answer cases in any particular order, but every case id present in the request must have a matching entry in your response.
 
-Batch Example
-Request:
+## Batch Example
 
+#### Request
+
+```json
 {
   "case_1": {
     "start_coordinate": [0, 0],
@@ -60,24 +69,39 @@ Request:
         "end_time": "2026-06-10T09:00:00Z",
         "speed_factor": 0.0
       }
-    ]
-  }
-}
-Response:
+```
 
+    ]
+
+}
+}
+
+#### Response
+
+```json
 {
-  "case_1": { "total_duration_sec": 60, "arrival_time": "2026-06-10T08:31:00Z", "path": ["edge_0"] },
+  "case_1": {
+    "total_duration_sec": 60,
+    "arrival_time": "2026-06-10T08:31:00Z",
+    "path": ["edge_0"]
+  },
   "case_2": { "total_duration_sec": null, "arrival_time": null, "path": [] }
 }
-Timeout
+```
+
+## Timeout
+
 You have 10 seconds to respond to the entire batch request - regardless of how many cases it contains. This is a single hard cutoff on the whole request/response, not a per-case allowance, so a large batch requires an efficient solution, not just a correct one. If you do not respond within 10 seconds, the request times out and the entire batch is scored as 0 - there is no partial credit for cases you'd already solved when the timeout hit.
 
-Scoring
+## Scoring
+
 Each case in the batch is scored independently and correct answers add up across the batch - there's no partial credit within a single case, but solving more cases in the batch earns more points. Larger, more complex cases (more nodes/edges/obstructions) are worth more points than small ones, since solving them within the time limit requires an efficient solution, not just a correct one.
 
-Input Format
+## Input Format
+
 The shape of a single case's value in the request map:
 
+```json
 {
   "start_coordinate": [x, y],
   "end_coordinate": [x, y],
@@ -90,8 +114,12 @@ The shape of a single case's value in the request map:
       "node2": [x, y],
       "base_duration_sec": 0
     }
-  ],
-  "obstructions": [
+```
+
+],
+"obstructions": [
+
+```json
     {
       "edge_id": "string",
       "edge": {
@@ -102,29 +130,42 @@ The shape of a single case's value in the request map:
       "end_time": "ISO-8601",
       "speed_factor": 0.0
     }
-  ]
+```
+
+]
 }
-Notes
+
+## Notes
+
 Edges are bidirectional with the same base duration in both directions.
 Obstructions are directional and apply only when both match:
 edge_id
 edge.from -> edge.to
-Output Format
+
+## Output Format
+
 The shape your answer for a single case must take (the value you put under that case's id in your response map):
 
+```json
 {
   "total_duration_sec": 0,
   "arrival_time": "ISO-8601",
   "path": ["edge_id_1", "edge_id_2", "..."]
 }
+```
+
 If destination is unreachable:
 
+```json
 {
   "total_duration_sec": null,
   "arrival_time": null,
   "path": []
 }
-Constraints
+```
+
+## Constraints
+
 No waiting at nodes.
 Coordinates are integer pairs: [x, y].
 base_duration_sec is an integer in [0, 999].
@@ -135,8 +176,10 @@ Examples
 Each example below shows a single case's input/output - the shape of one value inside the batch request/response map described above, not a full batch request on its own.
 
 Example 1
-Input
 
+#### Input
+
+```json
 {
   "start_coordinate": [0, 0],
   "end_coordinate": [3, 1],
@@ -164,22 +207,30 @@ Input
       "end_time": "2026-06-10T08:45:00Z",
       "speed_factor": 0.0
     }
-  ]
-}
-Output
+```
 
+]
+}
+
+#### Output
+
+```json
 {
   "total_duration_sec": 230,
   "arrival_time": "2026-06-10T08:33:50Z",
   "path": ["edge_0", "edge_4", "edge_3"]
 }
+```
+
 Explanation
 
 edge_4 is preferred over edge_1 + edge_2 because of active obstruction impact.
 
 Example 2
-Input
 
+#### Input
+
+```json
 {
   "start_coordinate": [0, 0],
   "end_coordinate": [3, 3],
@@ -207,22 +258,30 @@ Input
       "end_time": "2026-06-10T08:45:00Z",
       "speed_factor": 0.0
     }
-  ]
-}
-Output
+```
 
+]
+}
+
+#### Output
+
+```json
 {
   "total_duration_sec": null,
   "arrival_time": null,
   "path": []
 }
+```
+
 Explanation
 
 end_coordinate is unreachable, so the expected result is the null-duration no-path response.
 
 Example 3 (No Waiting + Cycling)
-Input
 
+#### Input
+
+```json
 {
   "start_coordinate": [0, 0],
   "end_coordinate": [2, 0],
@@ -255,22 +314,30 @@ Input
       "end_time": "2026-06-10T08:32:00Z",
       "speed_factor": 0.2
     }
-  ]
-}
-Output
+```
 
+]
+}
+
+#### Output
+
+```json
 {
   "total_duration_sec": 60,
   "arrival_time": "2026-06-10T08:31:00Z",
   "path": ["edge_0", "edge_0", "edge_0", "edge_0", "edge_0", "edge_1"]
 }
+```
+
 Explanation
 
 No waiting is allowed, so the route cycles on edge_0 until edge_1's blocking window clears.
 
 Example 4 (No Waiting + Blocked at Start)
-Input
 
+#### Input
+
+```json
 {
   "start_coordinate": [0, 0],
   "end_coordinate": [1, 0],
@@ -287,15 +354,21 @@ Input
       "end_time": "2026-06-10T09:00:00Z",
       "speed_factor": 0.0
     }
-  ]
-}
-Output
+```
 
+]
+}
+
+#### Output
+
+```json
 {
   "total_duration_sec": null,
   "arrival_time": null,
   "path": []
 }
+```
+
 Explanation
 
 Waiting is not allowed, and the only outgoing move from start_coordinate is blocked (speed_factor=0.0) at departure time, so no valid route exists.

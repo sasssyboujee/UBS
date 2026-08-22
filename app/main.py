@@ -1,5 +1,9 @@
+import logging
+
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request, Response, status
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
@@ -10,6 +14,8 @@ from app.models import (
     HelloResponse,
 )
 from app.routers import routers
+
+logger = logging.getLogger("uvicorn.error")
 
 app = FastAPI(
     title="UBS Global Coding Challenge API",
@@ -34,6 +40,21 @@ async def global_exception_handler(request: Request, exc: Exception):
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         content={"error": "Internal Server Error", "message": "An unexpected error occurred."},
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    body = await request.body()
+    logger.info(
+        "422 VALIDATION path=%s body=%s errors=%s",
+        request.url.path,
+        body.decode("utf-8", errors="replace")[:2000],
+        exc.errors(),
+    )
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        content={"detail": jsonable_encoder(exc.errors())},
     )
 
 

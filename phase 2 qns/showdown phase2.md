@@ -1,4 +1,5 @@
-Phase 2 — Reading the Table
+# Phase 2 — Reading the Table
+
 The full game rules and protocol are on the SHOWDOWN guide. This page covers what phase 2 adds: table rules, and attempts made of several legs.
 
 Table rules
@@ -24,7 +25,8 @@ An attempt is four legs played back to back. Each leg is a complete match with f
 
 recent_hands does not carry across legs. It resets when a new leg starts.
 
-Phase 2: Reading the Table — 400 pts
+# Phase 2: Reading the Table — 400 pts
+
 Four legs, 40 hands each, a different table rule on each.
 
 The same opponent plays all four legs, under the same name, and plays the same way throughout. Their name is drawn fresh each attempt, so it never means anything.
@@ -36,7 +38,7 @@ Per leg: chip delta ≥ +25 → 100 points. Points accumulate per leg; you don't
 Glossary additions
 Terms added to the SHOWDOWN guide's glossary:
 
-Term	Meaning
-Leg	One complete match inside a multi-match attempt. Fresh stacks, its own rule, its own recent_hands.
-Table rule (table_rule)	The showdown ruleset a match is played under. Announced on every request as a codename, and never changes mid-match.
-Codename	The opaque string table_rule carries. It identifies a ruleset without describing it; the same codename always means the same ruleset.
+Term Meaning
+Leg One complete match inside a multi-match attempt. Fresh stacks, its own rule, its own recent_hands.
+Table rule (table_rule) The showdown ruleset a match is played under. Announced on every request as a codename, and never changes mid-match.
+Codename The opaque string table_rule carries. It identifies a ruleset without describing it; the same codename always means the same ruleset.

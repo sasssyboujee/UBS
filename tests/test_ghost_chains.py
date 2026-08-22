@@ -252,11 +252,12 @@ def test_shared_identity_across_disconnected_components():
         make_tx("t2", "c", "h", timestamp(1), ipAddress="10.0.0.1"),
         make_tx("t3", "o", "s", timestamp(2), ipAddress="10.0.0.1"),
     ])
-    # First use of an identity is free; each additional disconnected component
-    # that reuses it adds evidence of coordination.
+    # Reuse without structural context is a hint, not proof of risk on its
+    # own: isolated reuse edges stay neutral.  (Reuse on a structured edge is
+    # covered by the bridging test below.)
     assert shared[0]["riskScore"] == no_identity[0]["riskScore"] == 0.0
-    assert shared[1]["riskScore"] > no_identity[1]["riskScore"]
-    assert shared[2]["riskScore"] > shared[1]["riskScore"]
+    assert shared[1]["riskScore"] == no_identity[1]["riskScore"]
+    assert shared[2]["riskScore"] == no_identity[2]["riskScore"]
 
 
 def test_missing_identity_on_connected_path_is_suspicious():
@@ -402,7 +403,7 @@ def test_self_loop_does_not_create_parallel_pairs():
     assert results[1]["riskScore"] <= cycle[1]["riskScore"]
 
 
-def test_fan_out_and_fan_in_from_different_sources_are_not_structural_signals():
+def test_fan_out_is_not_a_signal_but_fan_in_is():
     reset()
     fan_out = post_transactions([
         make_tx("t1", "a", "b", timestamp(0)),
@@ -416,8 +417,8 @@ def test_fan_out_and_fan_in_from_different_sources_are_not_structural_signals():
         make_tx("t1", "a", "s", timestamp(0)),
         make_tx("t2", "b", "s", timestamp(1)),
     ])
-    # Two unrelated sources paying the same party is ordinary flow.
-    assert fan_in[1]["riskScore"] == 0.0
+    # Money fanning into the same destination is convergence evidence.
+    assert fan_in[1]["riskScore"] > 0.0
 
 
 def test_chain_extension_grows_with_depth():
@@ -454,9 +455,15 @@ def test_out_of_order_stale_edge_does_not_enter_graph():
     ])
     # t2 is already older than 24h relative to the active window when it
     # arrives, so it is scored but must not be inserted.  t3 therefore sees no
-    # edge from b to c and scores as an isolated new edge.
+    # edge from b to c: it scores as fan-in into b (not as a cycle).
     assert results[0]["riskScore"] > 0.0
-    assert results[1]["riskScore"] == 0.0
+    assert 0.0 < results[1]["riskScore"] < 0.5
+
+    # The stale edge must not change t3's score: a fresh fan-in run matches.
+    reset()
+    post_transactions([make_tx("t1", "a", "b", timestamp(100 * 60))])
+    fresh = post_transactions([make_tx("t3", "c", "b", timestamp(90 * 60))])
+    assert results[1]["riskScore"] == fresh[0]["riskScore"]
 
 
 def test_out_of_order_arrival_uses_current_state():

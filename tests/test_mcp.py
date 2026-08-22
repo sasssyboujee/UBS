@@ -130,7 +130,7 @@ def test_mcp_classify_sample_square_as_rectangle():
     assert tool_result(response) == "rectangle"
 
 
-def test_mcp_recall_returns_json_array_of_strings():
+def test_mcp_recall_returns_list_of_strings():
     response = rpc(
         "tools/call",
         {
@@ -144,10 +144,8 @@ def test_mcp_recall_returns_json_array_of_strings():
     assert response.status_code == 200
     result = response.json()["result"]
     assert result["isError"] is False
-    chunks = json.loads(result["content"][0]["text"])
-    assert isinstance(chunks, list)
-    assert all(isinstance(chunk, str) for chunk in chunks)
-    assert any("14 March" in chunk for chunk in chunks)
+    chunks = [item["text"] for item in result["content"] if item["type"] == "text"]
+    assert chunks == ["The sensor grid was last brought back into alignment on 14 March."]
 
 
 def test_mcp_recall_without_materials_uses_challenge_set(monkeypatch):
@@ -165,7 +163,7 @@ def test_mcp_recall_without_materials_uses_challenge_set(monkeypatch):
     assert response.status_code == 200
     result = response.json()["result"]
     assert result["isError"] is False
-    chunks = json.loads(result["content"][0]["text"])
+    chunks = [item["text"] for item in result["content"] if item["type"] == "text"]
     assert chunks == ["The library is on the east side of campus."]
 
 
@@ -183,8 +181,8 @@ def test_mcp_retrieve_is_recall_alias():
     assert response.status_code == 200
     result = response.json()["result"]
     assert result["isError"] is False
-    chunks = json.loads(result["content"][0]["text"])
-    assert any("14 March" in chunk for chunk in chunks)
+    chunks = [item["text"] for item in result["content"] if item["type"] == "text"]
+    assert chunks == ["The sensor grid was last brought back into alignment on 14 March."]
 
 
 def test_mcp_navigate_returns_next_node():

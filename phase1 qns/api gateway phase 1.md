@@ -10,11 +10,15 @@ POST /solve
 Sample Request
 The endpoint receives:
 
+```json
 {
-    "payload": "ewoJImFkYXB0SW5wdXQiOiB7CgkJInVzZXIiOiB7CgkJCSJpZCI6ICJVNDIiLAoJCQkiZnVsbE5hbWUiOiAiSmFuZSBEb2UiCgkJfSwKCQkiYWN0aW9uIjogIkNSRUFURSIsCgkJIm1ldGFkYXRhIjogewoJCQkicHJpb3JpdHkiOiAiSElHSCIKCQl9Cgl9Cn0="
+  "payload": "ewoJImFkYXB0SW5wdXQiOiB7CgkJInVzZXIiOiB7CgkJCSJpZCI6ICJVNDIiLAoJCQkiZnVsbE5hbWUiOiAiSmFuZSBEb2UiCgkJfSwKCQkiYWN0aW9uIjogIkNSRUFURSIsCgkJIm1ldGFkYXRhIjogewoJCQkicHJpb3JpdHkiOiAiSElHSCIKCQl9Cgl9Cn0="
 }
+```
+
 where the payload somehow decodes to this:
 
+```json
 {
     "adaptInput": {
         "user": {
@@ -25,11 +29,15 @@ where the payload somehow decodes to this:
         "metadata": {
             "priority": "HIGH"
         }
+```
+
     }
+
 }
 Sample Response
 Your POST /solve must return JSON in this shape:
 
+```json
 {
     "adaptOutput": {
         "id": "U42",
@@ -37,4 +45,6 @@ Your POST /solve must return JSON in this shape:
         "action": "create",
         "priority": 3
     }
+```
+
 }

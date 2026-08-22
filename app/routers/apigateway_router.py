@@ -1,6 +1,9 @@
 import base64
 import json
+import logging
 import math
+from collections import deque
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, HTTPException, status
 
@@ -14,7 +17,24 @@ from app.models import (
     SolveResponse,
 )
 
+logger = logging.getLogger("uvicorn.error")
+
 router = APIRouter()
+
+# Temporary diagnostics: remember the most recent /solve calls so we can
+# inspect exactly what the coordinator sends and what we answer.
+SOLVE_TRACES: deque = deque(maxlen=100)
+
+
+def _record_trace(decoded: dict, response: SolveResponse | None, error: str | None = None):
+    SOLVE_TRACES.append(
+        {
+            "ts": datetime.now(UTC).isoformat(),
+            "decoded": decoded,
+            "response": response.model_dump(exclude_none=True) if response else None,
+            "error": error,
+        }
+    )
 
 PRIORITY_MAP = {
     "HIGH": 3,
@@ -93,7 +113,8 @@ def _compute_slo(
         window = [
             hb
             for hb in heartbeats
-            if hb.timestamp == slo_query.since
+            if hb.service == slo_query.service
+            and hb.timestamp >= slo_query.since
         ]
 
     if not window:
@@ -102,33 +123,32 @@ def _compute_slo(
             p95LatencyMs=0,
         )
 
-    # Availability
+    # Availability: successful heartbeats / total heartbeats in the window.
     ok_count = sum(
         1
         for hb in window
         if hb.status.strip().upper() == "OK"
     )
 
-    fail_count = sum(
-        1
-        for hb in window
-        if hb.status.strip().upper() == "FAIL"
-    )
-
-    availability = ok_count / (ok_count + fail_count)
+    availability = ok_count / len(window)
     # P95
     latencies = sorted(
         hb.latencyMs
         for hb in window
     )
 
-    index = math.floor(0.95 * (len(latencies) - 1))
+    index = math.ceil(0.95 * len(latencies)) - 1
     p95_latency = latencies[index]
 
     return SloOutput(
         availability=availability,
         p95LatencyMs=p95_latency,
     )
+
+
+@router.get("/debug/solve-trace")
+async def solve_trace():
+    return {"count": len(SOLVE_TRACES), "traces": list(SOLVE_TRACES)}
 
 
 @router.post(
@@ -142,6 +162,8 @@ async def solve_challenge(
     try:
         data = _decode_payload(request.payload)
 
+        logger.info("SOLVE decoded=%s", json.dumps(data, default=str))
+
         decoded = DecodedPayload(**data)
 
         adapt_output = _adapt_input(
@@ -153,18 +175,26 @@ async def solve_challenge(
             decoded.sloQuery,
         )
 
-        return SolveResponse(
+        response = SolveResponse(
             adaptOutput=adapt_output,
             sloOutput=slo_output,
         )
 
+        logger.info("SOLVE response=%s", response.model_dump_json())
+
+        _record_trace(data, response)
+
+        return response
+
     except ValueError as e:
+        _record_trace({}, None, error=f"ValueError: {e}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e),
         )
 
     except TypeError as e:
+        _record_trace({}, None, error=f"TypeError: {e}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Invalid payload structure: {e}",
