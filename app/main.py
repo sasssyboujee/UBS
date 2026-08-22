@@ -82,7 +82,7 @@ async def mcp_endpoint(request: Request):
     if request.method == "GET":
         if "text/event-stream" in accept:
             return StreamingResponse(sse_endpoint_stream(), media_type="text/event-stream")
-        return JSONResponse({"service": "school-days-mcp", "status": "ok"})
+        return JSONResponse({"service": "nursery-mcp", "status": "ok"})
 
     # POST
     try:
