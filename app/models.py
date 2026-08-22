@@ -89,6 +89,23 @@ class MoveResponse(BaseModel):
 # Adaptive API Gateway challenge models
 # ---------------------------------------------------------------------------
 
+class HealthResponse(BaseModel):
+    status: str = Field(..., description="Current health status of the API")
+    version: str = Field(..., description="API version")
+
+
+class HelloRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=50, description="Name to greet")
+
+    @field_validator("name")
+    @classmethod
+    def name_must_not_contain_numbers(cls, v: str) -> str:
+        if any(char.isdigit() for char in v):
+            raise ValueError("Name must not contain numbers")
+        return v.strip()
+
+class HelloResponse(BaseModel):
+    greeting: str = Field(..., description="Greeting message")
 
 class SolveRequest(BaseModel):
     payload: str = Field(..., description="Base64 encoded payload")
