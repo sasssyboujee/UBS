@@ -89,7 +89,7 @@ Tools in `app/mcp_server.py`:
 | Tool | Purpose | Returns |
 | --- | --- | --- |
 | `get_name` | "What is your name?" | `Nursery` (string, 3–30 chars) |
-| `calculate` | `a op b`, ints −100..100, `+ - * /` | exact number (int or decimal) |
+| `calculate` | full arithmetic expression, e.g. `2 + 3 * 5` | exact number with correct `* /` before `+ -` precedence |
 | `classify_shape` | base64 PNG | `rectangle`, `triangle`, or `circle` (OpenCV contours + circularity) |
 
 ## Project Structure & Module Organization

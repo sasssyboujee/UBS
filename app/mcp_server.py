@@ -32,17 +32,24 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "calculate",
         "description": (
-            "Perform an arithmetic operation on two integers between -100 and 100. "
-            "operator is one of +, -, *, /."
+            "Evaluate an arithmetic expression with correct operator precedence "
+            "(* and / are evaluated before + and -). Pass the whole expression "
+            "exactly as written, e.g. for 'What is 2 + 3 * 5?' call "
+            "calculate with expression='2 + 3 * 5' (the answer is 17, not 25). "
+            "Supports integers, +, -, *, /, parentheses, and unary minus."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "a": {"type": "integer", "minimum": -100, "maximum": 100},
-                "b": {"type": "integer", "minimum": -100, "maximum": 100},
-                "operator": {"type": "string", "enum": ["+", "-", "*", "/"]},
+                "expression": {
+                    "type": "string",
+                    "description": (
+                        "The full arithmetic expression to evaluate, "
+                        "e.g. '2 + 3 * 5' or '(4 + 6) / 2'."
+                    ),
+                },
             },
-            "required": ["a", "b", "operator"],
+            "required": ["expression"],
         },
     },
     {
@@ -64,33 +71,162 @@ TOOLS: list[dict[str, Any]] = [
 ]
 
 
+class _ExpressionParser:
+    """Tiny recursive-descent parser for + - * / with parentheses and unary minus."""
+
+    def __init__(self, tokens: list[str]):
+        self.tokens = tokens
+        self.pos = 0
+
+    def peek(self) -> str | None:
+        return self.tokens[self.pos] if self.pos < len(self.tokens) else None
+
+    def next(self) -> str | None:
+        token = self.peek()
+        if token is not None:
+            self.pos += 1
+        return token
+
+    def parse(self) -> int | float:
+        if not self.tokens:
+            raise ValueError("empty expression")
+        value = self.parse_expression()
+        if self.peek() is not None:
+            raise ValueError(f"unexpected token {self.peek()!r}")
+        return value
+
+    def parse_expression(self) -> int | float:
+        value = self.parse_term()
+        while self.peek() in ("+", "-"):
+            operator = self.next()
+            rhs = self.parse_term()
+            if operator == "+":
+                value += rhs
+            else:
+                value -= rhs
+        return value
+
+    def parse_term(self) -> int | float:
+        value = self.parse_factor()
+        while self.peek() in ("*", "/"):
+            operator = self.next()
+            rhs = self.parse_factor()
+            if operator == "*":
+                value *= rhs
+            else:
+                if rhs == 0:
+                    raise ValueError("division by zero")
+                value /= rhs
+        return value
+
+    def parse_factor(self) -> int | float:
+        token = self.peek()
+        if token in ("+", "-"):
+            self.next()
+            value = self.parse_factor()
+            return -value if token == "-" else value
+        if token == "(":
+            self.next()
+            value = self.parse_expression()
+            if self.next() != ")":
+                raise ValueError("missing closing parenthesis")
+            return value
+        if token is None:
+            raise ValueError("unexpected end of expression")
+        if token.replace(".", "", 1).isdigit():
+            self.next()
+            return float(token) if "." in token else int(token)
+        raise ValueError(f"unexpected token {token!r}")
+
+
+def _tokenize(expression: str) -> list[str]:
+    tokens: list[str] = []
+    index = 0
+    while index < len(expression):
+        char = expression[index]
+        if char.isspace():
+            index += 1
+            continue
+        if char in "+-*/()":
+            tokens.append(char)
+            index += 1
+            continue
+        if char.isdigit() or char == ".":
+            end = index
+            while end < len(expression) and (expression[end].isdigit() or expression[end] == "."):
+                end += 1
+            tokens.append(expression[index:end])
+            index = end
+            continue
+        raise ValueError(f"unexpected character {char!r}")
+    return tokens
+
+
+def _format_number(value: float) -> str:
+    if isinstance(value, int):
+        return str(value)
+    if value.is_integer():
+        return str(int(value))
+    return f"{value:.10f}".rstrip("0").rstrip(".")
+
+
+def _evaluate_expression(expression: str) -> str:
+    sanitized = "".join(
+        char for char in expression if char.isdigit() or char in "+-*/(). "
+    )
+    if not sanitized.strip():
+        raise ValueError("empty expression")
+    parser = _ExpressionParser(_tokenize(sanitized))
+    return _format_number(parser.parse())
+
+
 def _calculate(arguments: dict[str, Any]) -> tuple[str, bool]:
+    expression = arguments.get("expression")
+    if isinstance(expression, str) and expression.strip():
+        try:
+            return _evaluate_expression(expression), False
+        except ValueError as exc:
+            return f"Error: {exc}", True
+
+    # Legacy fallback: a single binary operation, in case the agent still
+    # passes the old a/b/operator shape.
+    a = arguments.get("a")
+    b = arguments.get("b")
+    operator = arguments.get("operator")
+    if a is not None and b is not None and operator is not None:
+        return _calculate_binary(a, b, operator)
+
+    return (
+        "Error: pass the full arithmetic expression in the 'expression' parameter, e.g. calculate(expression='2 + 3 * 5')",
+        True,
+    )
+
+
+def _calculate_binary(a: Any, b: Any, operator: Any) -> tuple[str, bool]:
     try:
-        a = int(arguments.get("a"))
-        b = int(arguments.get("b"))
+        a_int = int(a)
+        b_int = int(b)
     except (TypeError, ValueError):
         return "Error: a and b must be integers", True
 
-    operator = str(arguments.get("operator", ""))
-    if not -100 <= a <= 100 or not -100 <= b <= 100:
+    op = str(operator)
+    if not -100 <= a_int <= 100 or not -100 <= b_int <= 100:
         return "Error: operands must be between -100 and 100", True
 
-    if operator == "+":
-        result: int | float = a + b
-    elif operator == "-":
-        result = a - b
-    elif operator == "*":
-        result = a * b
-    elif operator == "/":
-        if b == 0:
+    if op == "+":
+        result: int | float = a_int + b_int
+    elif op == "-":
+        result = a_int - b_int
+    elif op == "*":
+        result = a_int * b_int
+    elif op == "/":
+        if b_int == 0:
             return "Error: division by zero", True
-        result = a / b
+        result = a_int / b_int
     else:
-        return f"Error: unsupported operator {operator!r}", True
+        return f"Error: unsupported operator {op!r}", True
 
-    if isinstance(result, float) and result.is_integer():
-        return str(int(result)), False
-    return str(result), False
+    return _format_number(result), False
 
 
 def _classify(arguments: dict[str, Any]) -> tuple[str, bool]:

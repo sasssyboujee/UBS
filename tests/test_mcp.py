@@ -71,17 +71,35 @@ def test_mcp_get_name():
 
 
 def test_mcp_calculate():
+    assert tool_result(rpc("tools/call", {"name": "calculate", "arguments": {"expression": "2 + 2 + 5"}})) == "9"
+    assert tool_result(rpc("tools/call", {"name": "calculate", "arguments": {"expression": "2 + 3 * 5"}})) == "17"
+    assert tool_result(rpc("tools/call", {"name": "calculate", "arguments": {"expression": "5 * 20 / 10"}})) == "10"
+    assert tool_result(rpc("tools/call", {"name": "calculate", "arguments": {"expression": "-9 * 2 + 2"}})) == "-16"
+    assert tool_result(rpc("tools/call", {"name": "calculate", "arguments": {"expression": "7 / 2"}})) == "3.5"
+    assert tool_result(rpc("tools/call", {"name": "calculate", "arguments": {"expression": "4 / 2"}})) == "2"
+    assert tool_result(rpc("tools/call", {"name": "calculate", "arguments": {"expression": "(2 + 3) * 5"}})) == "25"
+
+
+def test_mcp_calculate_ignores_question_text():
+    assert tool_result(rpc("tools/call", {"name": "calculate", "arguments": {"expression": "What is 2 + 3 * 5?"}})) == "17"
+
+
+def test_mcp_calculate_legacy_binary_fallback():
     assert tool_result(rpc("tools/call", {"name": "calculate", "arguments": {"a": 2, "b": 2, "operator": "+"}})) == "4"
-    assert tool_result(rpc("tools/call", {"name": "calculate", "arguments": {"a": 7, "b": 2, "operator": "/"}})) == "3.5"
-    assert tool_result(rpc("tools/call", {"name": "calculate", "arguments": {"a": -5, "b": 3, "operator": "*"}})) == "-15"
-    assert tool_result(rpc("tools/call", {"name": "calculate", "arguments": {"a": 4, "b": 2, "operator": "/"}})) == "2"
 
 
 def test_mcp_calculate_division_by_zero_is_error():
-    response = rpc("tools/call", {"name": "calculate", "arguments": {"a": 4, "b": 0, "operator": "/"}})
+    response = rpc("tools/call", {"name": "calculate", "arguments": {"expression": "4 / 0"}})
     result = response.json()["result"]
     assert result["isError"] is True
     assert "division by zero" in result["content"][0]["text"]
+
+
+def test_mcp_calculate_missing_expression_is_error():
+    response = rpc("tools/call", {"name": "calculate", "arguments": {}})
+    result = response.json()["result"]
+    assert result["isError"] is True
+    assert "expression" in result["content"][0]["text"]
 
 
 def test_mcp_classify_rectangle():
