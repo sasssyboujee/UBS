@@ -26,7 +26,7 @@ async def kan_cheong_delivery_driver(request: dict):
                 loop.run_in_executor(_executor, solve_case, case),
                 timeout=remaining,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             result = {"total_duration_sec": None, "arrival_time": None, "path": []}
         return case_id, result
 
