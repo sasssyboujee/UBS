@@ -93,9 +93,9 @@ LOOKBACK = timedelta(hours=24)
 INF = float("inf")
 
 # Score weights for the structural raw signal.
-W_PAR = 2.0      # an alternative route between already-connected nodes
+W_PAR = 2.0      # an alternative / shortened route between connected nodes
 W_CYCLE = 10.0   # the edge closes a return path
-W_MULTI = 15.0   # per additional node already on a cycle through destination
+W_MULTI = 15.0   # per existing return edge flowing back into the destination
 
 # Score weights for the identity raw signal (Phase 2).
 W_SHIFT = 3.0    # identity value changes mid-flow (scaled by ambiguity)
