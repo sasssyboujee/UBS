@@ -150,9 +150,7 @@ def travel_time(
             remaining_distance = 0.0
         else:
             elapsed = next_boundary - current_time
-
-            if elapsed < 0:
-                elapsed = 0
+            elapsed = max(elapsed, 0)
 
             distance_covered = (
                 elapsed * speed_factor / base_duration
