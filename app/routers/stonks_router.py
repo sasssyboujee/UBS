@@ -6,12 +6,12 @@ from fastapi import APIRouter
 router = APIRouter()
 
 
-def solve_stonks_case(test_case: Dict[str, Any]) -> List[str]:
+def solve_stonks_case(test_case: dict[str, Any]) -> list[str]:
     energy = int(test_case.get("energy", 0))
     capital = int(test_case.get("capital", 0))
     raw_timeline = test_case.get("timeline", {})
 
-    timeline: Dict[int, Dict[str, Dict[str, int]]] = {}
+    timeline: dict[int, dict[str, dict[str, int]]] = {}
     for y_str, stocks in raw_timeline.items():
         y = int(y_str)
         timeline[y] = {}
@@ -34,7 +34,7 @@ def solve_stonks_case(test_case: Dict[str, Any]) -> List[str]:
     initial_avail_tuple = tuple(sorted(initial_avail))
 
     pq = [(-capital, energy, 2037, (), initial_avail_tuple, ())]
-    visited: Dict[tuple, int] = {}
+    visited: dict[tuple, int] = {}
 
     best_cash = capital
     best_actions: list[str] = []
@@ -163,6 +163,6 @@ def solve_stonks_case(test_case: Dict[str, Any]) -> List[str]:
 
 
 @router.post("/stonks")
-def stonks(test_cases: List[Dict[str, Any]]) -> List[List[str]]:
+def stonks(test_cases: list[dict[str, Any]]) -> list[list[str]]:
     """Solves time machine stock trading test cases in batch."""
     return [solve_stonks_case(tc) for tc in test_cases]
