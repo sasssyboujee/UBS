@@ -93,7 +93,7 @@ def _compute_slo(
         window = [
             hb
             for hb in heartbeats
-            if hb.timestamp >= slo_query.since
+            if hb.service == slo_query.service
         ]
 
     if not window:
