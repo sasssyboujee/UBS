@@ -369,16 +369,11 @@ class GhostChainScorer:
         if len(amounts) < 2:
             return 0.0
 
-        ratios: list[float] = []
-        for i in range(len(amounts) - 1):
-            denom = amounts[i + 1]
-            if denom > 0:
-                ratios.append(amounts[i] / denom)
-        if not ratios:
-            return 0.0
-
         raw = 0.0
-        if any(r > 1.0 + 1e-9 for r in ratios):
+        # Reversal: the current leg exceeds the immediately preceding leg —
+        # a value trajectory reversal against structural continuity.
+        previous = amounts[1]
+        if previous > 0 and amounts[0] > previous:
             raw += W_REV
         if any(self._has_value_split(node) for node in segment_nodes):
             raw += W_DIV
@@ -468,7 +463,11 @@ class GhostChainScorer:
                     comp_a = self._uf_find(a)
                     if comp_a != comp_u:
                         other_components.add(comp_a)
-                raw += W_REUSE * len(other_components)
+                # Reuse is a coordination hint, not proof of risk on its own:
+                # it is weighted by the structural signal of the edge, so an
+                # isolated reuse (no structure) contributes nothing.
+                structural_score = structural / (structural + SATURATION)
+                raw += W_REUSE * len(other_components) * structural_score
 
             # Shift versus agreement with the flow entering u.  Several
             # distinct earlier values make either interpretation ambiguous.
