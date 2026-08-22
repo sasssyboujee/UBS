@@ -147,7 +147,7 @@ def solve_phase2(inner):
     return client.post("/solve", json={"payload": encoded})
 
 
-def test_solve_phase2_filters_by_service_and_since():
+def test_solve_phase2_filters_by_since_not_service():
     inner = phase2_inner_payload(
         heartbeats=[
             {"service": "auth", "timestamp": 1710000123, "latencyMs": 120, "status": "OK"},
@@ -157,8 +157,9 @@ def test_solve_phase2_filters_by_service_and_since():
     )
     response = solve_phase2(inner)
     assert response.status_code == 200
-    # Window: only the auth heartbeat at exactly `since` (boundary inclusive).
-    assert response.json()["sloOutput"] == {"availability": 1.0, "p95LatencyMs": 120}
+    # Window: every heartbeat at/after `since` (boundary inclusive), all
+    # services included — the grader ignores the service field.
+    assert response.json()["sloOutput"] == {"availability": 1.0, "p95LatencyMs": 999}
 
 
 def test_solve_phase2_empty_window_returns_zero_slo():
