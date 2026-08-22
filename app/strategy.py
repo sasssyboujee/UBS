@@ -1097,11 +1097,48 @@ def _phase3_move(req: MoveRequest, legal: set[str], codename: str) -> MoveRespon
     if n_opp == 0:
         n_opp = 1
 
+    # --- Phase 3 Lockdown ---
+    # At a 6-seat table, blinds cost 3 chips per 6 hands = 0.5 chips/hand.
+    # If we're strictly leading AND our lead can absorb the blind bleed for the
+    # remaining hands, lock down: fold everything, jam only confirmed pairs.
+    delta = _our_chip_delta(req)
+    leader_delta = max(
+        (p.chip_delta for p in req.players if p.name != "you" and not p.busted),
+        default=0,
+    )
+    our_lead = delta - leader_delta
+    remaining = max(1, (req.total_hands or 60) - (req.hand_number or 0))
+    blind_bleed = remaining  # ~0.5 chips/hand at 6-seat, use 1.0 for safety margin
+    
+    if our_lead > blind_bleed and our_lead > 10:
+        # We are strictly leading with enough margin to survive blind bleed.
+        # Nit mode: fold everything except confirmed pairs.
+        if req.round == "post_reveal" and comm is not None and card == comm:
+            # We have a pair — jam it.
+            if _pair_confirmed(codename, comm) or codename in KNOWN_TABLE_RULES:
+                if to_call == 0:
+                    if "bet" in legal and req.max_raise_to is not None:
+                        return MoveResponse(action="bet", amount=req.max_raise_to)
+                    return MoveResponse(action="check")
+                if "raise" in legal and req.max_raise_to is not None:
+                    return MoveResponse(action="raise", amount=req.max_raise_to)
+                if "call" in legal:
+                    return MoveResponse(action="call")
+        # Everything else: check or fold.
+        if to_call == 0:
+            return MoveResponse(action="check")
+        # Complete small blind for cheap.
+        if to_call <= 1 and "call" in legal:
+            return MoveResponse(action="call")
+        if "fold" in legal:
+            return MoveResponse(action="fold")
+        return MoveResponse(action="check")
+
     obs = _codename_observations(codename)
     learned = codename in KNOWN_TABLE_RULES or obs >= _P3_MIN_OBS
 
     if not learned:
-        # Exploration: keep pots tiny.
+        # Exploration: keep pots tiny but play strong cards.
         if to_call == 0:
             return MoveResponse(action="check")
         if to_call <= 4 and "call" in legal:
@@ -1124,7 +1161,7 @@ def _phase3_move(req: MoveRequest, legal: set[str], codename: str) -> MoveRespon
                     return MoveResponse(action="bet", amount=_phase3_raise_to(req, target))
                 return MoveResponse(action="check")
             
-            if to_call <= max(stack // 3, 10) and "call" in legal:
+            if to_call <= max(stack // 2, 15) and "call" in legal:
                 return MoveResponse(action="call")
             
             if eq >= best_eq - 1e-5 and "call" in legal:
@@ -1135,7 +1172,7 @@ def _phase3_move(req: MoveRequest, legal: set[str], codename: str) -> MoveRespon
             return MoveResponse(action="call")
             
         elif marginal:
-            if to_call <= 2 and "call" in legal:
+            if to_call <= 4 and "call" in legal:
                 return MoveResponse(action="call")
             if "fold" in legal:
                 return MoveResponse(action="fold")
@@ -1155,8 +1192,8 @@ def _phase3_move(req: MoveRequest, legal: set[str], codename: str) -> MoveRespon
         eq = _equity_post_multi(card, comm, codename, n_opp)
         best_eq = max(_equity_post_multi(c, comm, codename, n_opp) for c in range(1, 14))
         
-        monster = eq >= best_eq - 0.05 and eq > 0.6
-        good = eq > 0.4
+        monster = eq >= best_eq - 0.05 and eq > 0.45
+        good = eq > 0.25
         
         if monster:
             if to_call == 0:
