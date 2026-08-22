@@ -20,6 +20,7 @@ from app import strategy as new_strategy
 from app.models import MoveRequest
 
 OLD_PATH = "/tmp/strategy_old_showdown.py"
+WEAK_OPPONENT = False
 
 # ---------------------------------------------------------------------------
 # Showdown rules (the bot never sees these; it only sees the opaque codename)
@@ -108,6 +109,49 @@ def post_eq(card: int, comm: int) -> float:
     return ((card - 1) - (1 if comm < card else 0) + 0.5) / 13.0
 
 
+def nadia_weak_act(req: MoveRequest):
+    """A passive station variant: rarely bets, calls down light.
+
+    Closer to the real opponent profile (the production bot busted the real
+    opponent in one leg, so the real one pays off value bets heavily).
+    """
+    card = req.your_number or 1
+    comm = req.community_number
+    to_call = req.to_call or 0
+    pot = req.pot or 0
+    legal = set(req.legal_actions or [])
+    our_bet = 0
+    for player in req.players:
+        if player.seat == req.your_seat:
+            our_bet = player.bet_this_round
+
+    def amount_for(target: int):
+        if req.min_raise_to is None or req.max_raise_to is None:
+            return None
+        return max(req.min_raise_to, min(target, req.max_raise_to))
+
+    if req.round == "pre_reveal":
+        if to_call == 0:
+            if card >= 12 and "raise" in legal:
+                return ("raise", amount_for(our_bet + pot // 2))
+            return ("check", None)
+        if to_call == 1:
+            return ("call", None)
+        if card >= 9 or to_call <= 6:
+            return ("call", None)
+        return ("fold", None)
+
+    if to_call == 0:
+        if card == comm and "bet" in legal:
+            return ("bet", amount_for(pot // 2))
+        return ("check", None)
+    if card == comm and "raise" in legal:
+        return ("raise", amount_for(our_bet + 2 * to_call))
+    if post_eq(card, comm) > 0.25 or to_call <= 4:
+        return ("call", None)
+    return ("fold", None)
+
+
 def nadia_act(req: MoveRequest):
     """Nadia's decision for the acting seat described by ``req``.
 
@@ -178,6 +222,7 @@ class Leg:
         self.button = 0
         self.hands: list[dict] = []
         self.current_log: list[dict] = []
+        self.hand_start = {0: 200, 1: 200}
         self.illegal_responses = {0: 0, 1: 0}
 
     def build_request(self, hand_no, round_label, actor, cards, comm, stacks,
@@ -220,8 +265,20 @@ class Leg:
             max_raise_to=max_r,
             legal_actions=legal,
             players=[
-                {"seat": 0, "name": "you", "bet_this_round": bets[0], "stack": stacks[0]},
-                {"seat": 1, "name": "Nadia", "bet_this_round": bets[1], "stack": stacks[1]},
+                {
+                    "seat": 0,
+                    "name": "you",
+                    "bet_this_round": bets[0],
+                    "stack": stacks[0],
+                    "chip_delta": self.hand_start[0] - 200,
+                },
+                {
+                    "seat": 1,
+                    "name": "Nadia",
+                    "bet_this_round": bets[1],
+                    "stack": stacks[1],
+                    "chip_delta": self.hand_start[1] - 200,
+                },
             ],
             current_hand_actions=self.current_log,
             recent_hands=self.hands,
@@ -232,7 +289,8 @@ class Leg:
             resp = self.choose(req)
             action, amount = resp.action, resp.amount
         else:
-            action, amount = nadia_act(req)
+            opponent = nadia_weak_act if WEAK_OPPONENT else nadia_act
+            action, amount = opponent(req)
 
         # Enforce legality the way the coordinator would (and count how often
         # a strategy submits something the coordinator would reject).
@@ -336,6 +394,7 @@ class Leg:
         cards = {0: self.rng.randint(1, 13), 1: self.rng.randint(1, 13)}
         comm = self.rng.randint(1, 13)
         stacks = self.stacks
+        self.hand_start = dict(stacks)
         # Blinds: a player who cannot cover the blind posts what they have
         # (all-in blind); stacks can never go negative.
         posted = {sb: min(1, stacks[sb]), bb: min(2, stacks[bb])}
@@ -345,7 +404,7 @@ class Leg:
         self.current_log = []
         assert sum(stacks.values()) + pot == 400, (hand_no, stacks, pot)
 
-        pre = self.betting_round(
+        pre, pot = self.betting_round(
             hand_no, "pre_reveal", sb, posted, cards, None, stacks, pot
         )
         if pre is not None:
@@ -363,10 +422,11 @@ class Leg:
                     "actions": list(self.current_log),
                 }
             )
+            assert sum(stacks.values()) == 400, (hand_no, stacks)
             return
 
         if stacks[0] > 0 and stacks[1] > 0:
-            post = self.betting_round(
+            post, pot = self.betting_round(
                 hand_no, "post_reveal", bb, {}, cards, comm, stacks, pot
             )
             if post is not None:
@@ -383,9 +443,11 @@ class Leg:
                         "actions": list(self.current_log),
                     }
                 )
+                assert sum(stacks.values()) == 400, (hand_no, stacks)
                 return
 
         self.settle_showdown(hand_no, cards, comm, stacks, pot)
+        assert sum(stacks.values()) == 400, (hand_no, stacks)
 
     def play_leg(self, hands=40):
         for hand_no in range(1, hands + 1):
@@ -453,29 +515,60 @@ def report(label, attempts, per_leg, busts, clears, illegal):
 
 
 def main():
+    global WEAK_OPPONENT
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--attempts", type=int, default=30)
     parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument(
+        "--weak-opponent",
+        action="store_true",
+        help="use the passive-station opponent model",
+    )
     args = parser.parse_args()
+    WEAK_OPPONENT = args.weak_opponent
 
     old = load_old()
 
-    print(f"seed {args.seed}, {args.attempts} attempts per strategy")
+    print(f"seed {args.seed}, {args.attempts} attempts per strategy, "
+          f"opponent={'weak station' if WEAK_OPPONENT else 'loose station'}")
     report(
         "OLD strategy (pre-change)",
         args.attempts,
         *run_attempts(old.choose_action, old._reset_learning, args.attempts, args.seed)[:4],
     )
-    report(
-        "NEW strategy (post-change)",
-        args.attempts,
-        *run_attempts(
-            new_strategy.choose_action,
-            new_strategy._reset_learning,
+
+    # Variant grid over lockdown parameters.
+    variants = [
+        (
+            "NEW lockdown: nit only when lockable (margin 2/hand), pair-jam",
+            {"LOCKDOWN_MARGIN_FACTOR": 2, "LOCKDOWN_PRE_JAM": False},
+        ),
+        (
+            "NEW lockdown: nit from +25 (margin 0), pair-jam only",
+            {"LOCKDOWN_MARGIN_FACTOR": 0, "LOCKDOWN_PRE_JAM": False},
+        ),
+        (
+            "USER variant: nit from +25 + all-in premium pre-reveal",
+            {"LOCKDOWN_MARGIN_FACTOR": 0, "LOCKDOWN_PRE_JAM": True},
+        ),
+    ]
+    for label, settings in variants:
+        for name, value in settings.items():
+            setattr(new_strategy, name, value)
+        report(
+            label,
             args.attempts,
-            args.seed,
-        )[:4],
-    )
+            *run_attempts(
+                new_strategy.choose_action,
+                new_strategy._reset_learning,
+                args.attempts,
+                args.seed,
+            )[:4],
+        )
+        # Restore defaults.
+        new_strategy.LOCKDOWN_MARGIN_FACTOR = 2
+        new_strategy.LOCKDOWN_PRE_JAM = False
 
 
 if __name__ == "__main__":
