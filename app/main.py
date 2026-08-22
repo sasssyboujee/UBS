@@ -6,6 +6,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
+from app.mcp_server2 import mcp
 
 from app.mcp_server import handle_rpc, sse_endpoint_stream, sse_response_stream
 from app.models import (
@@ -24,6 +25,7 @@ app = FastAPI(
 )
 for router in routers:
     app.include_router(router)
+app.mount("/mcp", mcp.sse_app())
 
 # Strict Security: Enforce CORS
 app.add_middleware(
