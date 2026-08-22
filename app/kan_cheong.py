@@ -31,11 +31,8 @@ from re import compile as re_compile
 from typing import Any
 
 INF = float("inf")
-MAX_POPS = 15_000
-# Per-case wall-clock budget in seconds.  The router enforces a global 9 s
-# timeout across the batch; this per-case limit prevents one pathological
-# case from starving the rest.
-CASE_BUDGET_SECS = 0.45
+MAX_POPS = 300_000  # pops are cheap; wall-clock is the real gate now
+DEFAULT_CASE_BUDGET_SECS = 8.0  # generous default for standalone/direct calls
 
 _ISO_RE = re_compile(
     r"(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?Z?"
