@@ -945,20 +945,20 @@ def choose_action(req: MoveRequest) -> MoveResponse:
     
     if codename != "standard":
         delta = _our_chip_delta(req)
-        if delta >= LOCKDOWN_MIN_DELTA:
-            # After threshold: just nit play fold all the way
+        # Coasting Phase: +100 guarantees we survive blind bleed (40 hands * 1.5 = 60 chips) and stay above +25
+        if delta >= 100:
             if (req.to_call or 0) == 0:
                 resp = MoveResponse(action="check")
             else:
                 resp = MoveResponse(action="fold")
         else:
-            # Before threshold: if good card, all in; else fold
+            # Gambling Phase: All-in with top 50% of cards, else fold immediately
             card = req.your_number or 1
             if req.round == "pre_reveal":
-                is_good = _equity_pre(card, codename) >= 0.65
+                is_good = card >= 8
             else:
                 comm = req.community_number or 1
-                is_good = _equity_post(card, comm, codename) >= 0.70
+                is_good = (card == comm) or (card >= 10)
                 
             if is_good:
                 if "raise" in legal and req.max_raise_to is not None:

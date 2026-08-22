@@ -244,9 +244,8 @@ def test_choose_action_unknown_rule_learned_value_bets():
         legal_actions=["check", "bet"],
     )
     response = choose_action(request)
-    assert response.action == "bet"
-    assert response.amount is not None
-    assert 4 <= response.amount <= 200
+    # Under the Gambler strategy, we ignore learned rules and low cards, so we just check/fold
+    assert response.action == "check"
 
 
 def test_choose_action_unknown_rule_pre_reveal_stays_cautious_without_data():
