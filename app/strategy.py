@@ -1113,17 +1113,21 @@ def _phase3_move(req: MoveRequest, legal: set[str], codename: str) -> MoveRespon
     if our_lead > blind_bleed and our_lead > 10:
         # We are strictly leading with enough margin to survive blind bleed.
         # Nit mode: fold everything except confirmed pairs.
-        if req.round == "post_reveal" and comm is not None and card == comm:
+        if (
+            req.round == "post_reveal"
+            and comm is not None
+            and card == comm
+            and (_pair_confirmed(codename, comm) or codename in KNOWN_TABLE_RULES)
+        ):
             # We have a pair — jam it.
-            if _pair_confirmed(codename, comm) or codename in KNOWN_TABLE_RULES:
-                if to_call == 0:
-                    if "bet" in legal and req.max_raise_to is not None:
-                        return MoveResponse(action="bet", amount=req.max_raise_to)
-                    return MoveResponse(action="check")
-                if "raise" in legal and req.max_raise_to is not None:
-                    return MoveResponse(action="raise", amount=req.max_raise_to)
-                if "call" in legal:
-                    return MoveResponse(action="call")
+            if to_call == 0:
+                if "bet" in legal and req.max_raise_to is not None:
+                    return MoveResponse(action="bet", amount=req.max_raise_to)
+                return MoveResponse(action="check")
+            if "raise" in legal and req.max_raise_to is not None:
+                return MoveResponse(action="raise", amount=req.max_raise_to)
+            if "call" in legal:
+                return MoveResponse(action="call")
         # Everything else: check or fold.
         if to_call == 0:
             return MoveResponse(action="check")

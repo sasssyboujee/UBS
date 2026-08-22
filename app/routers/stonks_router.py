@@ -1,18 +1,18 @@
 import heapq
-from typing import Any, Dict, List
+from typing import Any
 
-from fastapi import APIRouter, FastAPI, Request
+from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 router = APIRouter()
 
-def solve_stonks_case(test_case: Dict[str, Any]) -> List[str]:
+def solve_stonks_case(test_case: dict[str, Any]) -> list[str]:
     energy = int(test_case.get("energy", 0))
     capital = int(test_case.get("capital", 0))
     raw_timeline = test_case.get("timeline", {})
 
     # Parse timeline into structured data
-    timeline: Dict[int, Dict[str, Dict[str, int]]] = {}
+    timeline: dict[int, dict[str, dict[str, int]]] = {}
     for y_str, stocks in raw_timeline.items():
         y = int(y_str)
         timeline[y] = {}
@@ -28,7 +28,7 @@ def solve_stonks_case(test_case: Dict[str, Any]) -> List[str]:
     all_years = list(timeline.keys())
 
     # Pre-calculate maximum possible selling price per stock
-    max_sell_price: Dict[str, int] = {}
+    max_sell_price: dict[str, int] = {}
     for y, stocks in timeline.items():
         for s_name, data in stocks.items():
             p = data["price"]
@@ -47,9 +47,9 @@ def solve_stonks_case(test_case: Dict[str, Any]) -> List[str]:
     # (-cash, energy_left, current_year, inventory_tuple, available_tuple, actions_tuple)
     pq = [(-capital, energy, 2037, (), initial_avail_tuple, ())]
 
-    visited: Dict[tuple, int] = {}
+    visited: dict[tuple, int] = {}
     best_cash = capital
-    best_actions: List[str] = []
+    best_actions: list[str] = []
 
     while pq:
         neg_cash, energy_left, curr_year, inv_tuple, avail_tuple, actions = (
@@ -116,9 +116,8 @@ def solve_stonks_case(test_case: Dict[str, Any]) -> List[str]:
             for s_name, data in timeline[curr_year].items():
                 p = data["price"]
                 rem_q = avail_dict.get((curr_year, s_name), 0)
-                if rem_q > 0 and cash >= p:
+                if rem_q > 0 and cash >= p and max_sell_price.get(s_name, 0) > p:
                     # Only buy if there's a higher selling opportunity in another year
-                    if max_sell_price.get(s_name, 0) > p:
                         max_buy = min(rem_q, cash // p)
                         if max_buy > 0:
                             new_cash = cash - max_buy * p

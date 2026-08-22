@@ -397,3 +397,21 @@ def test_recall_drops_tiny_heading_chunks():
 def test_navigate_honours_hops_remaining_alias():
     path, _ = tb._find_path("m", "A", "D", 2, [], "", GRAPH)
     assert path == ["B", "D"]
+
+
+def test_recall_embedding_fallback_without_lexical_signal():
+    # Heavy paraphrase with no bridge coverage must fall back to embedding
+    # retrieval instead of returning a single short chunk.
+    doc = (
+        "The maintenance dose was fixed at 240 milligrams, administered as a "
+        "single subcutaneous injection at every scheduled dosing visit."
+    )
+    distract = (
+        "The library opened in 1987 near the east gate and closes at ten."
+    )
+    chunks = tb.recall(
+        "What is the daily dose of the drug, in mg?",
+        _materials(distract, doc),
+    )
+    assert chunks
+    assert "240" in " ".join(chunks)
