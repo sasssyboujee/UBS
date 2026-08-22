@@ -14,19 +14,19 @@ router = APIRouter(prefix="/ghost-chains", tags=["Ghost Chains"])
 
 
 @router.get("/health", response_model=GhostHealthResponse)
-async def ghost_chains_health():
+def ghost_chains_health():
     return GhostHealthResponse(status="ok")
 
 
 @router.post("/reset", response_model=GhostResetResponse)
-async def ghost_chains_reset(request: GhostResetRequest):
+def ghost_chains_reset(request: GhostResetRequest):
     if request.clearTransactions:
         scorer.reset()
     return GhostResetResponse(clearTransactions=request.clearTransactions)
 
 
 @router.post("/transactions", response_model=GhostTransactionsResponse)
-async def ghost_chains_transactions(request: GhostTransactionsRequest):
+def ghost_chains_transactions(request: GhostTransactionsRequest):
     results = scorer.process(request.transactions)
     return GhostTransactionsResponse(
         transactions=[
