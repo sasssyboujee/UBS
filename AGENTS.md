@@ -65,12 +65,28 @@ Heads-up no-limit betting game between bots. We expose one HTTP endpoint; the co
 - Decide via pot odds vs equity with aggression-adjusted margins; value-raise strong cards, fold weak hands to big bets, occasional deterministic bluffs, never fold a pair.
 - Unknown `table_rule` values fall back to a conservative check/call-small/fold strategy. Phase guides add twists on top of this page's rules.
 
+## Tool-box / Nursery Challenge
+
+Multi-turn agent with tool use connects to our **MCP server at `/mcp`** (Streamable HTTP). We decide tool names, schemas, and outputs.
+
+- `GET /mcp` — SSE endpoint event for the GET-first handshake, or JSON info.
+- `POST /mcp` — JSON-RPC 2.0 (`initialize`, `tools/list`, `tools/call`, notifications → 202). SSE-encoded responses when the client sends `Accept: text/event-stream`.
+
+Tools in `app/mcp_server.py`:
+
+| Tool | Purpose | Returns |
+| --- | --- | --- |
+| `get_name` | "What is your name?" | `Nursery` (string, 3–30 chars) |
+| `calculate` | `a op b`, ints −100..100, `+ - * /` | exact number (int or decimal) |
+| `classify_shape` | base64 PNG | `rectangle`, `triangle`, or `circle` (OpenCV contours + circularity) |
+
 ## Project Structure & Module Organization
 
 - `app/` — FastAPI source; `app/main.py` defines the app, routes, and middleware.
 - `app/models.py` — Pydantic request/response schemas for the SHOWDOWN `/move` endpoint.
 - `app/strategy.py` — pure decision logic for the SHOWDOWN betting bot (equity, pot odds, legal-action guard).
-- `tests/` — pytest suite; `tests/test_main.py` covers the API, `tests/test_strategy.py` covers strategy logic.
+- `app/mcp_server.py` — MCP server (JSON-RPC over Streamable HTTP) for the Tool-box / Nursery challenge.
+- `tests/` — pytest suite; `tests/test_main.py` covers the API, `tests/test_strategy.py` covers strategy logic, `tests/test_mcp.py` covers the MCP tools.
 - `main.py` — root entry-point stub.
 - `pyproject.toml` — project metadata, dependencies, and uv config.
 - `render.yaml` — Render web service deployment config.
