@@ -11,8 +11,8 @@ from typing import Any
 
 import httpx
 import tiktoken
-from fastapi import FastAPI, Request, JSONResponse
-from fastapi.responses import StreamingResponse
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse, StreamingResponse
 
 # ----------------------------------------------------------------------
 # Configuration
